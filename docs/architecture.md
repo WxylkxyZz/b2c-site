@@ -1,148 +1,265 @@
-# B2Csite 自托管部署架构方案
+# Medusa 自托管部署架构与实施手册
 
-> **状态：规划中，未实施。** 本文记录拟采用的 Medusa v2 自托管路线，供后续脚手架和部署设计使用。这里的拓扑、组件与流程是架构建议，不代表生产环境已经存在或通过测试。最终版本、命令、provider 配置和服务规格应在项目代码生成后，依据锁定的依赖版本与官方文档核实。
+> 本文是本项目的**实施基线与操作清单**。已确定项、建议项和需要用户提供/确认的事项分开标注，避免把设计当成已经部署完成。文档最后核对日期：2026-10-12。Medusa 和生态依赖持续更新；实际建项目时再次核验官方兼容说明，随后锁定版本，不追随自动升级。
 
-## 1. 目标与边界
+## 0. 决策摘要
 
-目标是逐步构建一个由 Medusa 驱动、Next.js 提供顾客店面的跨境 DTC 网站。用户已选择自主管理 VPS；初期也倾向在 VPS 上运行 PostgreSQL 和 Redis，以降低服务托管费用。该选择同时意味着需要自行负责备份、恢复、监控、系统更新和故障处理。
-
-本方案关注应用组件和发布路线，不在未验证前承诺具体 VPS 型号、月费用、支付/税务/物流 provider、吞吐量或可用性。上线前必须完成支付链路、webhook 幂等与重试、数据恢复和安全配置的实际验证。
-
-## 2. Medusa 组件职责
-
-| 组件 | 计划职责 | 外部访问 |
+| 项目 | 当前决定 | 状态/约束 |
 |---|---|---|
-| Next.js Storefront | 顾客页面、交互、商品展示、购物车和结账体验；通过 Store API 连接 Medusa | 顾客可访问 |
-| Medusa Server | 提供 Store API、Admin API 和管理界面；接收前端/管理端请求 | 通过受控域名访问，Admin 应额外保护 |
-| Medusa Worker | 处理后台任务、事件订阅器、定时任务等 | 不直接对顾客开放 |
-| PostgreSQL | 保存商品、订单、顾客和其他业务数据 | 仅应用内网可访问 |
-| Redis | 为 Medusa 的队列/事件等运行能力提供支持 | 仅应用内网可访问 |
-| S3 兼容对象存储 | 持久保存商品图片等文件；目标方向为 Cloudflare R2 | 由应用按配置访问 |
-| 反向代理 | 将域名/请求路由到 Storefront 或 Medusa，并管理 HTTPS 入口 | 仅对外开放必要 Web 端口 |
+| 电商后端 | Medusa v2 | 版本在脚手架时选定并锁入 lockfile |
+| 顾客店面 | Next.js 官方 Storefront | 与 Medusa 后端独立构建、独立发布；通过 Store API 连接 |
+| 管理后台 | Medusa Admin | 随 Medusa 后端提供，不能将 Admin 密钥放进店面 |
+| 首期运行环境 | 自管 VPS + Docker Compose | 单机是单点故障，必须配置异机备份并演练恢复 |
+| 数据库 | PostgreSQL，自托管在 VPS | 数据卷持久化；版本固定到明确 patch/digest，不用浮动 `latest` |
+| 队列/缓存 | Redis，自托管在 VPS | 内部网络访问；内存/持久化/淘汰策略按 Medusa 实际使用方式验证 |
+| 商品图片 | S3 兼容对象存储，偏向 Cloudflare R2 | 尚未创建或验证；数据库备份不包含对象文件本身 |
+| 容器镜像 | 后端、店面分别构建，GHCR 私有包 | Actions 用 `GITHUB_TOKEN` 写入；VPS 单独使用只读凭据拉取 |
+| 发布方式 | 首期 CI 构建、手动部署 | 暂不让 Actions 远程 SSH 自动改生产，减少初期故障面 |
+| 测试环境 | Staging 与 Production 数据/密钥隔离 | 同 VPS 仅在资源足够且做好隔离时采用 |
 
-Medusa Server 与 Worker 在生产中计划作为**两个运行实例**：可使用同一项目构建版本，以不同运行模式启动。实际启动命令和 `workerMode` 配置需按部署时的 Medusa 版本确认。Medusa 官方通用部署指南建议生产使用 server 与 worker 分离，并为应用资源预留至少 2GB RAM；这不是整台 VPS 的完整规格建议，数据库、Redis、Storefront 和操作系统还需要额外资源。
-
-## 3. 目标拓扑
+## 1. Medusa 组件与请求/数据流
 
 ```text
-                          顾客浏览器
-                              │
-                    ┌─────────▼─────────┐
-                    │   Next.js 店面     │
-                    └─────────┬─────────┘
-                              │ Store API
-                              ▼
-┌────────────────────── 自托管 VPS ──────────────────────┐
-│  Web 入口/反向代理                                      │
-│       ├── Next.js Storefront                            │
-│       └── Medusa Server（API + Admin）                  │
-│                                                        │
-│  Medusa Worker（后台工作，不对顾客公网开放）            │
-│       ├── PostgreSQL（持久化卷）                        │
-│       └── Redis（应用内网）                             │
-└────────────────────────────────────────────────────────┘
-             │                                │
-             ▼                                ▼
-      异地数据库备份                  S3 兼容对象存储
-                                             （计划 R2）
+顾客浏览器
+  └─ Next.js Storefront 容器（页面、交互、购物车/结账界面）
+       └─ Medusa Store API（publishable key；不是管理密钥）
+            └─ Medusa Server 容器
+                 ├─ Admin UI + Admin API（商家后台）
+                 ├─ PostgreSQL（商品、订单、顾客等业务数据）
+                 ├─ Redis（Medusa 队列、事件等运行能力）
+                 └─ S3 兼容存储（商品图，目标方向 R2）
 
-GitHub 仓库 → GitHub Actions 构建/检查 → GHCR 镜像仓库
-                                             │
-                                             ▼
-                                      VPS 拉取指定版本
+Medusa Worker 容器（同一后端构建版本，不向顾客开放）
+  ├─ PostgreSQL
+  └─ Redis
+
+GitHub 源码 → GitHub Actions → 私有 GHCR 镜像 → VPS 拉取并运行
 ```
 
-上图是逻辑图。真实部署中，反向代理、网络、TLS 终止位置、域名划分和对象存储访问策略需要与实际 DNS/CDN 设计一起确定。
+- **Storefront**：顾客看到的网站；改外观/页面逻辑通常只需重新构建店面。
+- **Medusa Server**：电商业务 API 和 Admin 所依赖的应用服务；商品数据通常通过 Admin 保存到 PostgreSQL，不必因每次商品录入重新部署。
+- **Medusa Worker**：后台任务、事件订阅、定时任务等。生产拓扑计划与 Server 分开。Medusa 官方通用部署指南推荐生产使用 server/worker 模式；项目启动参数和 `workerMode` 必须按最终锁定版本核对。
+- **PostgreSQL**：主要长期业务数据；必须备份并实测恢复。
+- **Redis**：不是 PostgreSQL 的替代品。不可随意套用会丢弃队列任务的 eviction 策略，需针对 Medusa 当前队列行为选配置。
+- **对象存储**：保存图片等文件；必须验证上传、读取、访问权限、URL/CDN 和环境隔离。
 
-## 4. 代码构建与发布
+官方部署指南将 Medusa 应用的最低内存建议描述为至少 2GB RAM；这不是整台 VPS 的规格结论，VPS 还要运行 Storefront、Server、Worker、PostgreSQL、Redis 和操作系统，应通过 staging 压测与监控留出余量。参见[通用部署指南](https://docs.medusajs.com/learn/deployment/general)。
 
-建议把代码版本、镜像版本和部署步骤关联起来，避免 VPS 直接构建应用：
+## 2. 版本与依赖锁定规则
 
-1. 开发者提交代码到 GitHub。
-2. GitHub Actions 执行依赖安装、静态检查、测试和 Docker 镜像构建。
-3. 通过检查的后端和店面镜像推送到 GHCR，使用不可混淆的 commit/tag 版本标识；生产不要只依赖可移动的 `latest` 标签。
-4. 先将候选版本部署到隔离的 Staging，验证应用健康和关键业务流程。
-5. 完成数据库备份并执行该版本所需迁移，再在 Production 更新应用镜像。
-6. 验证健康检查、Admin、Store API 和店面；记录当前/上一个镜像版本，以便处理应用回退。
+### 2.1 原则：脚手架时核验，第一次构建后锁定
 
-初期可以让 Actions 负责检查与构建、手动触发 VPS 部署；等凭据隔离、发布流程和回滚方案经验证后，再自动化部署。CI 用到的 GHCR/VPS 凭据应采用最小权限并存储在 GitHub Secrets 或受保护的服务器配置中，不得提交进仓库或写入镜像。
+Medusa、Next.js、Node、数据库镜像和 GitHub Actions 的版本更新节奏不同。现在不把一组未经同一兼容矩阵验证的 patch 号假装成最终版本；但实施时必须形成精确版本清单，不能长期使用 `@latest`、`node:22`、`postgres:15`、`redis:7` 或可移动 `latest` 标签来决定生产实际版本。
 
-## 5. 环境与数据隔离
+Medusa 官方安装文档当前说明的 Node.js 基线为 **20.19.0+ 或 22.12.0+ 的 LTS**；Next.js Starter 还受当前 Next.js/React 要求约束。项目建议首选 Node 22 LTS，但脚手架日的官方兼容要求优先于此建议。检查：[Medusa 安装要求](https://docs.medusajs.com/learn/installation)、[Next.js 系统要求](https://nextjs.org/docs/app/getting-started/installation#system-requirements)、[Node.js 发布计划](https://nodejs.org/en/about/previous-releases)。
 
-最低限度规划两套逻辑环境：
+### 2.2 版本矩阵（实施时填写精确值并提交）
 
-- **Staging**：测试镜像与集成；使用独立数据库、Redis、域名/访问方式及测试密钥，不连接正式顾客数据或真实付款。
-- **Production**：真实店铺；仅运行审核过的版本，使用正式密钥、独立数据和受限运维权限。
+| 层 | 规划基线 | 精确版本如何确定/固定 | 不能做什么 |
+|---|---|---|---|
+| Medusa CLI / `@medusajs/*` | Medusa v2，同一兼容发行线 | 用脚手架创建后检查所有 `@medusajs/*` 包；避免混用不同版本线；保存 `package-lock.json`；CI 用 `npm ci` | 不让生产重新解析 `latest`；不单独升级一个核心包却不验证其余包 |
+| Next.js Starter、Next.js、React | 采用与 Medusa Starter 配套版本 | 由所选官方 Starter 提供基线；核验 Medusa Starter 文档及 Next.js peer/runtime 要求；把 `package.json` 精确版本和 lockfile 提交 | 不把 Next.js/React 任意升级到未验证组合 |
+| Node.js / npm | 优先 Node 22 LTS（以官方兼容范围为准） | ` .nvmrc` / `.node-version` 与 Docker 基础镜像统一；记录 Node 和 npm 精确版本；CI、开发、构建镜像一致 | 不让 Windows、WSL、CI、VPS 构建阶段使用不一致的 Node 主版本 |
+| PostgreSQL | 主版本 15+ 的计划基线 | 选定具体受支持主版本及 patch；Compose 镜像 pin 到 patch，生产进一步锁 digest；升级按 PostgreSQL 升级路径操作 | 不用 `postgres:latest`；不认为跨主版本改 image tag 就完成数据库升级 |
+| Redis | 主版本 7 的计划基线 | 固定具体 patch/digest；依据 Medusa 队列用途验证内存、持久化及淘汰策略 | 不在未验证时套用可能淘汰队列数据的配置 |
+| Docker / Compose | Docker Engine + Compose plugin | 记录 VPS 与 CI 使用的受支持版本；升级前用 staging 验证 | 不依赖某台机器未记录的 Docker 行为 |
+| 应用基础镜像 | Node 官方 LTS 镜像，分别供 backend/storefront | 固定 Node patch 标签并优先 pin digest；定期安全更新，重建并测试 | 不用不受控浮动标签；不在 ARM VPS 上假定构建镜像架构会自动匹配 |
+| GitHub Actions | 官方 action，版本与供应链审核策略一致 | workflow 用完整 commit SHA pin action；更新时由 Dependabot/人工核验 release 和 SHA | 不只写 `@main` 或不受控分支 |
+| Medusa providers/plugins | 与 Medusa 主版本兼容 | 按官方 provider 文档安装，精确锁版本；CI 构建和 Staging 集成测试 | 不凭 npm 包名推断配置参数或兼容性 |
 
-若初期同一 VPS 运行两套环境，必须评估资源竞争，并使用独立 Compose project、网络、卷、端口/路由及环境文件。开发环境的数据卷也不能误当成生产数据。
+**版本冻结记录应写入仓库**，例如 `docs/dependency-matrix.md` 或本表填充后的表格，至少包含：组件、精确版本、官方来源/发布日期、锁定文件或镜像 digest、验证日期、升级负责人/步骤。每次版本升级要有单独 PR，先 CI 再 Staging。
 
-## 6. 数据持久化、迁移和恢复
+> 文档撰写日不在线验证具体 patch 组合；因此这里明确提供支持范围和固定方法，而非编造一组“最新且已验证”的数字。开始 scaffold 前应重新打开官方文档，选出精确版本后再开始安装。官方链接见本文末尾。
 
-### PostgreSQL
+## 3. GitHub Actions、GHCR 与你需要提供的权限
 
-- 数据库容器可替换，但业务数据必须存放在明确的持久化卷或托管数据库中。
-- 定期创建一致性备份，并复制到 VPS 以外的安全存储；同机备份无法覆盖整机/磁盘损坏。
-- 设计备份保留周期、加密、访问权限和恢复目标；定期做恢复演练，验证恢复出来的数据可用。
-- 发布 Medusa 版本或自定义数据模型变更时，确认迁移命令和顺序；在 Staging 先验证。迁移可能不可逆或与旧代码不兼容，所以应用镜像回退不一定能单独恢复系统。
+### 3.1 建议的最小权限方案
 
-### Redis
+**构建并发布私有镜像：**同一仓库的 Actions workflow 使用 GitHub 自动提供的 `GITHUB_TOKEN`，workflow 明确声明最小权限：
 
-Redis 用于 Medusa 的运行时基础设施功能，不应视作商品、订单的唯一长期存储。限制内存并制定队列积压监控；是否启用持久化、备份和具体淘汰策略需结合 Medusa 队列语义及 Redis 使用方式验证，不能盲目配置可能丢弃队列任务的淘汰策略。
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
 
-### 图片与其他文件
+配合官方 `docker/login-action` 登录 `ghcr.io`（用户名使用 `${{ github.actor }}`，密码使用 `${{ secrets.GITHUB_TOKEN }}`），再由 `docker/build-push-action` 构建并推送。将 image 名称设置为 `ghcr.io/<owner>/<package>`，并为后端和店面分别标记 commit SHA/Release 版本。无需为了**同仓库 Actions 构建并发布镜像**另行创建 GitHub API key 或 PAT；前提是 Actions 被允许运行、token 有 `packages: write`，且 GHCR 包权限允许该仓库写入。实际首次推送后检查 package 与仓库的关联/访问设置。
 
-生产图片计划存放在 S3 兼容对象存储中，而不是只存在应用容器可写层。需要验证 endpoint、bucket、权限、公开访问/CDN URL、上传流程和跨环境隔离。数据库备份通常不会包含对象存储里的实际文件，两类资产要分别考虑恢复。
+**VPS 拉取私有镜像：**这是另一个身份。VPS 不会自动继承 Actions 的 `GITHUB_TOKEN`，需配置一个独立的只读 GHCR 凭据（GitHub classic PAT，最小 `read:packages` scope，且账号有该 package 的读取权）。将其安全地用于 VPS 的 `docker login ghcr.io`，不要写进 Compose 文件、仓库、镜像或终端历史；可使用 Docker credential store。该 token 可设到期日并安排轮换。若账户/组织启用 SSO，还要授权 token。GitHub 对 GHCR 外部 CLI 拉取私有包的认证说明见[Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-with-a-personal-access-token)。
 
-## 7. 安全与可运维性要求
+### 3.2 用户需要做什么
 
-- PostgreSQL、Redis 不暴露公网；容器间仅开放必要网络访问。
-- 后端密钥、数据库连接串、JWT secret、支付和对象存储凭据通过运行环境注入，不能进入 Git、构建参数日志或镜像层。
-- Storefront 仅使用 publishable API key；Admin API 密钥不能发到浏览器。
-- 为 `STORE_CORS`、`ADMIN_CORS`、`AUTH_CORS` 设置实际所需来源，禁止宽松通配符直接用于生产。
-- Admin 管理界面启用强认证并限制访问面；反向代理额外认证是否适用要与 Medusa 登录、回调和 API 路径一并测试。
-- 建立应用健康检查、错误日志、数据库空间、主机内存/磁盘和 Worker 队列观察；关键告警应能通知维护者。
-- 配置系统安全更新、SSH 最小权限、主机防火墙和定期重启/维护窗口。
+| 时间 | 你需要操作/提供 | 是否需要把密钥告诉 Claude/写入 Git |
+|---|---|---|
+| 开始项目时 | 确认 GitHub 仓库 owner/name、是否允许 GitHub Actions、Actions workflow 权限，以及目标默认分支 | 否；仓库名不是密钥 |
+| 首次 CI 发布时 | 如 Actions 默认限制包写入，在仓库 Settings → Actions → General 中允许 workflow 访问包；确认 `GITHUB_TOKEN` 有 `packages: write` | 不需 PAT/API key；GitHub 自动签发 token |
+| VPS 拉私有 GHCR 时 | 在 GitHub 创建仅 `read:packages` 的 classic PAT；在 VPS 登录 GHCR；验证 `docker pull` 成功 | 只在 VPS 安全录入，不发给 Claude、不提交、不贴日志 |
+| 自动 SSH 部署（以后可选） | 创建受限 deploy 用户和专用 SSH key；把私钥存为 GitHub Actions secret，固定服务器 host key | 不在本聊天中提供私钥；首期建议不启用自动 SSH 部署 |
+| 正式业务接入时 | 在各供应商后台创建 Staging/Test 与 Production 凭据；决定支付、邮件、对象存储配置 | 通过服务器安全环境配置/Secret Store 输入，不进 Git/镜像 |
+| 服务器上线前 | 准备 VPS SSH 访问、操作系统、CPU 架构、磁盘、内存、备份存储及实际域名/服务地址 | 提供非敏感参数即可；密码仍自行安全录入 |
 
-## 8. 当前选择与待确认事项
+**GitHub Actions 要不要 API？**对于“构建并推 GHCR”，通常不需要你提供额外 GitHub API key：`GITHUB_TOKEN` 足够。Actions runner 本身使用 GitHub 平台 API 能力，但 token 由 GitHub 自动提供并限制权限。私有镜像的 VPS 拉取，以及未来的 SSH 部署，则是独立授权事项。
 
-### 已明确的方向
+参考：[GitHub Actions 包权限](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)、[使用 GITHUB_TOKEN 发布包](https://docs.github.com/en/actions/publishing-packages/publishing-docker-images)、[GHCR Container registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
-- 电商后端计划使用 Medusa v2。
-- 顾客店面计划使用 Next.js，并与 Medusa 后端分开。
-- 自行管理 VPS，初期偏向将 PostgreSQL 和 Redis 也放在 VPS。
-- 使用 Docker Compose 管理容器；CI 构建项目镜像，计划推送到 GHCR 后由 VPS 拉取。
-- 商品图片目标使用 S3 兼容对象存储，当前倾向 R2。
+### 3.3 首期发布流水线边界
 
-### 实施前需要确认
+建议第一期 workflow 做：checkout → 配置 Node → `npm ci` → lint/typecheck/test → build → Docker buildx build → GHCR 登录 → push commit SHA 标签。先不让同一个 workflow 自动 SSH 到生产机；人工在 VPS 设置目标 tag、拉取、备份/迁移/更新并 smoke test。自动部署作为二期工作，在 Staging 和回滚验证通过后再决定。
 
-1. 选定并锁定 Medusa、Next.js、Node.js 及 Docker 基础镜像版本；匹配官方支持矩阵。
-2. 选择 VPS 规格和地域；按应用构建峰值、后台资源、数据库、缓存和 Staging 的总内存/磁盘规划，而非只看 Medusa 最低内存建议。
-3. 确认 Staging 是同机还是独立资源，并决定生产是否适合长期单机运行。
-4. 明确备份目的地、保留周期、加密与恢复目标，完成 PostgreSQL 和对象存储的恢复演练。
-5. 验证支付 provider、webhook 验签/幂等/重试、退款、邮件、税务和配送流程；未完成前不能接收真实订单。
-6. 确认 R2/S3 provider 配置与商品图片访问方式。
-7. 明确是否采用 Cloudflare/Caddy 或其他 Web 入口方案，并验证 Admin 安全、TLS 与 CORS。
-8. 决定 Actions 是仅构建还是也自动部署；确定镜像标记、部署批准和回滚办法。
-9. 在部署时重新核实费用、服务免费额度及商业用途条款，不把旧估价当作报价。
+- PR：只验证，不推送生产镜像、不接触生产 secrets。
+- 默认分支合并：构建并发布不可变 commit-tagged 镜像；不自动更新生产。
+- Release/人工批准：选择某个已验证 SHA 发布到 Staging/Production。
+- GHCR 包设为 Private；核对包访问策略，确保正确仓库 workflow 可写、VPS read-only 凭据可读。
+- Node Docker 镜像和 buildx 平台必须匹配目标架构。若 VPS 为 ARM64，CI 发布至少要含 `linux/arm64`；若同时有本机开发 x86 构建，也可发布 multi-platform manifest。
 
-## 9. 实施顺序建议
+## 4. 服务网络与 Compose 约束
 
-1. 由官方脚手架生成应用，先在本地启动 Medusa Admin 与 Storefront，确认两者通过 API 协作。
-2. 用测试数据在 Admin 建商品，观察哪些修改是数据库内容，哪些页面展示要改前端代码。
-3. 完成 Docker 开发环境与生产构建，确认镜像在干净环境能启动。
-4. 先部署 Staging，完成数据库迁移、图片上传、商品读取、购物车和测试支付流程。
-5. 配置备份并实际恢复；验证更新和回滚流程。
-6. 完成支付、安全、邮件、税务与配送测试，再规划 Production 上线。
+### 对外与内部服务
 
-## 官方参考
+| 服务 | 公网端口 | Compose 网络 | 持久化 |
+|---|---:|---|---|
+| 反向代理 | 80/443 | 与 storefront/backend 同一受限网络 | TLS 数据/配置卷（如该代理需要） |
+| Storefront | 不直接发布 host port | web 网络 | 通常无业务数据卷 |
+| Medusa Server | 不直接发布 host port，由 proxy 转发 | web + data 网络 | 不存商品媒体在容器层 |
+| Medusa Worker | 不对公网发布 | data 网络 | 不存唯一业务数据在容器层 |
+| PostgreSQL | 不对公网发布 | data 网络 | 命名卷 + 异机备份 |
+| Redis | 不对公网发布 | data 网络 | 按 Medusa 队列要求决定持久化策略 |
 
-- [Medusa 部署概览](https://docs.medusajs.com/learn/deployment)
-- [Medusa 通用部署指南](https://docs.medusajs.com/learn/deployment/general)
-- [Medusa 生产构建](https://docs.medusajs.com/learn/build)
+- Compose 的内部 DNS 服务名用于连接，应用容器中的 DB host 不可写 `localhost`。
+- 生产 Compose 用 `image:` 和固定 image tag，不在 VPS 上 `build:`。
+- 配置 `healthcheck`；`depends_on` 的启动顺序不能代替应用重试/恢复能力。
+- 设定日志轮转与磁盘上限，避免日志/镜像挤满磁盘。
+- PostgreSQL 卷升级前备份；绝不可用 `docker compose down -v` 清理生产环境。
+- Redis 的 `maxmemory`、持久化与 `maxmemory-policy` 需在 staging 进行队列任务测试后决定。
+
+## 5. 配置与密钥清单
+
+变量名会随 Medusa/Starter 版本和所选 provider 变化。以下是**配置类别**，脚手架完成后以生成的 `.env.template`、官方文档和代码核准准确名称。
+
+| 放置位置 | 配置类别/示例 | 秘密？ | 说明 |
+|---|---|---:|---|
+| Medusa Server/Worker 运行环境 | `DATABASE_URL`、`REDIS_URL` | 是 | Server/Worker 使用相同环境目标，但仅授予必要访问 |
+| Medusa Server/Worker 运行环境 | `JWT_SECRET`、`COOKIE_SECRET` 等认证密钥 | 是 | 生成强随机独立值；Staging/Production 不复用 |
+| Medusa Server 运行环境 | `STORE_CORS`、`ADMIN_CORS`、`AUTH_CORS` | 否（但敏感配置） | 只允许需要的域名；不能生产通配符 |
+| Medusa Server/Worker 运行环境 | Stripe/PayPal secret、Webhook secret、邮件 provider secret | 是 | 依所选集成确认；Webhook secrets 对应正确环境 |
+| Medusa Server 运行环境 | S3/R2 endpoint、bucket、region、access key/secret | endpoint/bucket 通常否；key/secret 是 | 不把 bucket secret 放到前端 |
+| Storefront 构建/运行环境 | Medusa backend URL、`NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY` | URL/key 可公开 | publishable key 不是 Admin secret；Next 的 `NEXT_PUBLIC_*` 会暴露给浏览器 |
+| Storefront 构建/运行环境 | Stripe publishable key（如采用） | 可公开 | 不能放 Stripe secret key |
+| GitHub Actions Secrets/Variables | 非敏感镜像名、必要的 deploy SSH private key（仅自动部署时） | 按字段 | 构建推 GHCR 不需自建 GHCR PAT；`GITHUB_TOKEN` 自动提供 |
+| VPS 安全配置 | GHCR pull token、生产 env 文件/secret store | 是 | 权限最小、文件权限受限、轮换；不要复制进仓库目录后意外提交 |
+
+`.env.example` / `.env.template` 只能含变量名和示例占位符，不得有可用凭据。检查 `.gitignore` 覆盖 `.env*`，但提交模板文件例外。
+
+## 6. 数据迁移、备份与回滚
+
+### 发布前迁移
+
+Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 link 同步。实际命令与执行位置应查看锁定版本的官方部署指南；旧文档中的 `medusa db:migrate` 不能脱离版本/构建目录直接照搬。迁移作为独立、可审计的一次性 release job 执行，不能让 server 和 worker 两个副本同时抢跑迁移。
+
+### PostgreSQL 与媒体备份
+
+- 备份 PostgreSQL 到 VPS 之外（加密、限制访问、设置保留期）；定义可接受的数据丢失窗口和恢复时间。
+- 定期在隔离环境实际恢复并检查商品、订单、用户、关联关系；记录恢复用时和步骤。
+- 对 R2/S3 对象文件单独定义版本控制/复制/恢复策略；数据库 dump 通常只存 metadata/URL，不含图片 bytes。
+- Redis 是否备份取决于队列状态语义；不要将缓存恢复策略与数据库恢复混为一谈。
+
+### 回滚
+
+- 保留上一版后端/店面镜像 digest 与 Compose 配置。
+- 只改应用且数据库向后兼容时，可切回旧 image tag。
+- 若迁移破坏兼容，应用回滚可能失败；必须按备份恢复计划操作，并评估恢复期间新增订单如何处理。
+- Production 部署流程必须有操作人、时间点、迁移结果、验证结果和回滚决定记录。
+
+## 7. 分阶段实施清单与验收
+
+### Phase 0 — 前置决策（用户需要参与）
+
+- [ ] 确认仓库 owner/name、默认分支，以及是否启用 GitHub Actions。
+- [ ] 确认 GHCR 使用私有包；Actions 允许 `GITHUB_TOKEN` 发布 package。
+- [ ] 准备 VPS：供应商、地区、CPU 架构（x86_64/ARM64）、RAM、磁盘、备份目的地、SSH 管理方式。
+- [ ] 确认 Storefront/API/Admin 的主机名和路径策略（用户已熟悉域名/HTTPS，无需在此重复基础知识）。
+- [ ] 决定图片存储服务与账号；正式支付/邮件服务可以先不配置，用测试模式验证。
+- [ ] 所有私钥和真实 secrets 由用户亲自在 GitHub/VPS/provider 后台输入，不在对话中传递。
+
+### Phase 1 — 本地 Medusa 能力验证
+
+- [ ] 官方脚手架生成 monorepo，确认 backend、storefront 各自入口、Node 版本、包管理器、锁文件。
+- [ ] 生成具体依赖版本清单；检查 `npm ls`/lockfile 中 Medusa 包版本一致。
+- [ ] Admin 建立一个测试商品；Storefront 通过 Store API 展示；验证价格/区域/币种读取。
+- [ ] 验收购物车和测试支付/模拟支付；不接受真实款项。
+- [ ] 记录问题时附 Medusa 版本、Node/npm 版本、执行目录、命令、完整错误栈（先移除 secrets）。
+
+### Phase 2 — 构建镜像与 Actions
+
+- [ ] 后端和店面各自 Dockerfile 能从干净 checkout 构建。
+- [ ] CI 使用锁文件安装依赖；Node 与本地基线一致；Actions 版本 pin 到 SHA。
+- [ ] 首次发布确认 `GITHUB_TOKEN` package 权限与 GHCR 仓库/package 关联。
+- [ ] 产物包含正确 VPS 平台；使用 commit SHA 标记；保存构建日志和镜像 digest。
+- [ ] 确认私有 GHCR 包没有误设为 public；VPS 只读凭据成功 pull。
+- [ ] 用 secret scanning 检查 Git diff、构建日志和镜像层，不得泄漏密钥。
+
+### Phase 3 — VPS Staging
+
+- [ ] Compose 网络、卷、healthcheck、restart policy 和日志轮转都已配置。
+- [ ] DB/Redis 仅内部访问；Admin 受保护；CORS、publishable key正确。
+- [ ] Server 与 Worker 分别启动并验证后台任务会被消费。
+- [ ] 迁移只运行一次，迁移完成后服务健康。
+- [ ] 图片上传/读取、Store API、购物车、测试支付、webhook 和邮件通过。
+- [ ] 完成数据库异地备份恢复和应用镜像回滚演练。
+
+### Phase 4 — Production readiness
+
+- [ ] 支付 webhook 验签、重复事件幂等、重试/失败补偿、退款和订单状态一致性已测试。
+- [ ] 备份恢复可用；监控、告警、磁盘余量、Redis/Worker backlog 有负责人。
+- [ ] 生产 secrets 与测试 secrets 完全分开；镜像 digest 和迁移版本记录完备。
+- [ ] 先做人工批准的 release；通过多次稳定发布后再评估自动部署。
+- [ ] 税务、配送、隐私和支付 provider 使用资格已由相应专业/供应商渠道确认。
+
+## 8. 故障定位速查
+
+| 现象 | 首先检查 | 常见原因/修复方向 |
+|---|---|---|
+| `npm ci` 或 Medusa build 失败 | Node/npm 版本、工作目录、lockfile、完整首个错误 | Node 不在支持范围；lockfile 与 package 不匹配；Medusa 核心包版本线混用；内存不足 |
+| Docker build 成功但 VPS `exec format error` | `docker image inspect` 的架构、buildx platforms、VPS `uname -m` | CI 只构建了 amd64，而 VPS 是 ARM64（或相反） |
+| GHCR push 401/403 | workflow `permissions`、Actions 设置、package access、image 名称/owner | 缺 `packages: write`；包未授权当前仓库；namespace 大小写/路径错误 |
+| VPS pull 私有镜像 401/denied | `docker login ghcr.io` 的账号、PAT scope、package read access、token 是否过期 | 缺 `read:packages`；package 无该用户权限；token 过期/未授权组织 SSO |
+| Medusa 启动连不上 DB/Redis | Compose DNS 名、容器网络、连接串、服务健康和日志 | 容器里误用 `localhost`；密码/url 编码错误；服务未 ready；环境变量未注入 |
+| Medusa API 401/商品列表空 | publishable key、发布状态、region/货币配置、请求 URL/headers | key 缺失/错误；商品 draft；Store API 要求字段/区域不匹配 |
+| CORS 或浏览器请求失败 | 浏览器 Network/Console、Medusa CORS env、Origin | Storefront 域名未列入 `STORE_CORS`；改了 env 却没重启/重建正确服务 |
+| Checkout/Payment provider 报错 | provider 配置、区域关联、test/live key、webhook endpoint/secret | 后端模块未注册；provider 未给 region 启用；测试与生产凭据混用 |
+| 商品图片上传成功但访问 403/404 | S3 endpoint/region/bucket、key权限、公开 URL/CDN配置 | endpoint 区域错误、读权限/URL设置错误、后台/店面访问路径不一致 |
+| 部署后启动报 migration/schema 错 | 发布日志、当前 image digest、迁移执行记录、数据库备份 | 漏跑迁移/link sync；迁移跑错版本/目录；Server/Worker 同时执行迁移 |
+| Worker 没有处理任务 | Worker mode、Redis URL、同版本镜像、worker日志/队列 | Worker 实际以 server mode 启动；Redis不通；订阅代码未加载 |
+
+排错时一次只改变一个变量，记录“现象 → 日志 → 假设 → 修改 → 验证”；不要为了试错直接清空生产数据库或删除 Docker volumes。
+
+## 9. 变更发布规则
+
+| 变更 | 需要的操作 |
+|---|---|
+| Admin 上传/修改商品 | 更新业务数据；通常不构建/部署应用 |
+| Next.js 页面/样式 | 构建并更新 Storefront image |
+| Medusa 后端代码或 provider 配置 | 构建并更新 backend image；按变更检查迁移 |
+| Node/Medusa/Next 依赖升级 | 变更精确版本和 lockfile；CI、Staging 全测；新镜像；必要迁移 |
+| PostgreSQL 主版本升级 | 单独数据库升级计划、备份恢复演练；不可仅改 Compose tag |
+| Actions workflow/action SHA 更新 | 检查权限最小化、release notes、CI 测试；不自动触碰生产数据 |
+
+## 10. 官方文档与实施前再核验
+
+- [Medusa 安装与运行要求](https://docs.medusajs.com/learn/installation)
 - [Medusa Docker 安装指南](https://docs.medusajs.com/learn/installation/docker)
+- [Medusa 生产构建](https://docs.medusajs.com/learn/build)
+- [Medusa 通用部署指南（含 server/worker、环境变量、迁移和健康检查）](https://docs.medusajs.com/learn/deployment/general)
+- [Medusa 部署概览](https://docs.medusajs.com/learn/deployment)
 - [Medusa 配置](https://docs.medusajs.com/learn/configurations/medusa-config)
-- [Medusa Cloud 与自托管比较](https://docs.medusajs.com/cloud/comparison)
+- [GitHub Actions 自动 token 身份认证](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
+- [GitHub 官方 Docker 镜像发布示例](https://docs.github.com/en/actions/publishing-packages/publishing-docker-images)
+- [GHCR Container registry 认证与权限](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+- [Docker Buildx setup action](https://github.com/docker/setup-buildx-action)
+- [Docker Build Push action](https://github.com/docker/build-push-action)
+- [Node.js LTS 发布计划](https://nodejs.org/en/about/previous-releases)
+- [Next.js 系统要求](https://nextjs.org/docs/app/getting-started/installation#system-requirements)
 
 ---
 
-本文是技术规划材料，不构成支付、税务、法律或合规建议，也不应直接作为生产 Compose 配置执行。部署实现须按生成后的代码、实际供应商和对应版本官方文档验证。
+本文不代替支付、税务、法律或供应商资格意见；图中架构是设计，未表示服务已经部署。执行真实构建前，先填全第 2 节的精确版本矩阵、第 7.1 节的用户输入项，并在 staging 通过所有验收门槛。
