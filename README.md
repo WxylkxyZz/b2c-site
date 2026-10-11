@@ -1,57 +1,26 @@
-# B2Csite — 跨境 DTC 独立电商站
+# B2Csite｜Medusa 自托管电商项目
 
-基于 [Medusa v2](https://medusajs.com/) 的 B2C 跨境 DTC 独立电商站，自托管部署，面向全球市场。
+本仓库用于规划和逐步构建一个基于 **Medusa v2** 的跨境 DTC 独立电商站。当前 Windows `main` 分支主要是架构与学习文档，**尚不是可直接部署的完整应用**。
 
-## 概述
+## 目标部署路线
 
-| 项 | 值 |
-|----|-----|
-| 后端引擎 | Medusa v2.21+（MIT，自托管，无 GMV 抽成） |
-| 店面 | Next.js Starter（官方 App Router） |
-| 收单 | Stripe（主）+ PayPal（次） |
-| 结汇 | USD → WorldFirst/PingPong → CNY |
-| 部署 | VPS 单机全栈 Docker Compose（Hetzner CAX21 美区 ARM） |
-| 对象存储 | Cloudflare R2（免费 10GB + CDN） |
-| CDN | Cloudflare 免费层 |
-| 月固定成本 | ~$5（无成交则无变动成本） |
+- **电商后端与管理后台**：Medusa。后端提供商品、购物车、订单等业务 API；Medusa Admin 供商家管理商品和订单。
+- **顾客店面**：Next.js Storefront，与 Medusa 后端分开开发和部署，通过 Store API 通信。
+- **运行方式**：VPS + Docker Compose；计划将 Medusa Server 和 Worker 分开运行。
+- **数据服务**：PostgreSQL 与 Redis 先计划自托管在 VPS；商品图片计划使用 S3 兼容对象存储（当前方向为 Cloudflare R2）。
+- **构建发布**：GitHub Actions 检查并构建项目 Docker 镜像，推送到 GHCR，再由 VPS 拉取和运行。
 
-## 文档
+以上是**目标架构，不代表已经搭建或验证**。正式选择的业务服务、资源规格、域名和生产配置仍需在实施前确认。
 
-- [技术架构文档](docs/architecture.md) — 完整架构、部署、支付、安全、成本、落地步骤
+## 文档导航
 
-## 本地开发
+- [部署架构方案](docs/architecture.md)：组件职责、网络与数据流、发布、备份、隔离和待确认事项。
+- [Medusa 小白学习手册](docs/medusa-learning-guide.md)：用通俗语言理解 Medusa、Storefront/Admin、模块、工作流和部署流程。
 
-### 前置要求
+## 从哪里开始
 
-- [Node.js 22 LTS](https://nodejs.org/)（用 [nvm-windows](https://github.com/coreybutler/nvm-windows) 管理）
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)（WSL2 后端）
-- [Git](https://git-scm.com/)
+建议先阅读学习手册中“Medusa 是什么”，再看部署架构。实际开发应从官方脚手架生成项目后，按对应 Medusa 版本验证 Node.js 要求、构建命令、模块配置和迁移流程；不要把本方案文档中的示意配置直接当成已验证的生产配置。
 
-### 起步
+## 安全提示
 
-```bash
-# 1. 安装依赖服务（PostgreSQL + Redis + MinIO）
-docker compose up -d
-
-# 2. 脚手架（首次，生成 monorepo）
-npx create-medusa-app@latest b2c-site
-
-# 3. 启动后端 + 店面
-cd apps/backend && npm run dev      # Medusa :9000 + Admin /app
-cd apps/storefront && npm run dev   # Storefront :8000
-```
-
-## 生产部署
-
-```bash
-# VPS 上（镜像从 GHCR pull，不在 VPS 上 build）
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-npx medusa db:migrate    # 有 schema 变更时
-```
-
-详见 [技术架构文档 §10 落地步骤](docs/architecture.md#10-落地步骤)。
-
-## License
-
-Private / proprietary.
+不要将 `.env`、支付密钥、数据库密码、JWT 密钥、对象存储密钥或真实顾客数据提交到 Git。发布凭据使用 GitHub Secrets 或服务器安全配置；生产与测试环境应使用不同的密钥和数据。

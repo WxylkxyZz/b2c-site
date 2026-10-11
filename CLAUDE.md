@@ -1,114 +1,38 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance for Claude Code when working in this repository.
 
-## Project Status
+## Project status
 
-Pre-implementation. This repo currently contains only `docs/architecture.md` — a fully specified technical architecture for a B2C cross-border DTC e-commerce site. No code has been written yet. The plan is to scaffold the project with `npx create-medusa-app@latest b2c-site`, which will generate a monorepo (`apps/backend` + `apps/storefront`).
+This repository is currently in the planning/documentation phase on Windows `main`. It contains the proposed architecture and learning guide; it does not yet contain the Medusa or Next.js application implementation. The WSL checkout is a separate branch/copy and must not be assumed to match this repository.
 
-## Architecture Decisions (locked)
+Do not describe proposed infrastructure as deployed or verified. Before scaffolding or implementing, read `README.md`, `docs/architecture.md`, and `docs/medusa-learning-guide.md`. Verify commands, versions, configuration, provider behavior, and resource requirements against the actual generated project and matching official Medusa documentation.
 
-Read `docs/architecture.md` for the full spec. Key locked decisions:
+## Current direction
 
-- **Framework**: Medusa v2.21+ (MIT, self-hosted, no GMV fees). Not Shopify.
-- **Storefront**: Official Next.js Starter (App Router), installed as monorepo via `create-medusa-app`.
-- **Entity**: US company, US Stripe account.
-- **Payments**: Stripe (primary, Payment Element for SAQ-A PCI scope) + PayPal (secondary).
-- **Settlement**: USD → WorldFirst/PingPong → CNY. ⚠️ Unverified assumption: WorldFirst's US ACH account may not be accepted as Stripe payout target (Stripe may require account name = merchant name). Test before committing.
-- **Hosting**: VPS single-machine Docker Compose (Hetzner CAX21, US region, ARM 4C/8GB, €3.39/mo). NOT CX22 (that's x86 2C/4GB — wrong spec).
-- **Object storage**: Cloudflare R2 (free 10GB + CDN), NOT local MinIO in production. MinIO only for local dev.
-- **CDN**: Cloudflare free tier in front of Caddy.
-- **Images**: CI builds → push GHCR → VPS pulls. Never build on VPS (4GB ARM will OOM during Medusa admin build).
-- **Staging**: Same VPS, isolated compose project, different ports.
-- **Reverse proxy**: Caddy 2 (auto TLS). Admin path protected with `basic_auth`, not IP allowlist (home IP is dynamic).
-- **Redis**: Must set `maxmemory 256mb --maxmemory-policy allkeys-lru` to prevent queue backlog from eating PG memory.
-- **DB migrations**: Run `medusa db:migrate` on every version upgrade. Missing this causes startup failure.
+- Commerce backend: Medusa v2.
+- Customer storefront: Next.js, deployed separately from Medusa.
+- Self-hosting: user-selected VPS managed with Docker Compose.
+- Initial preference: PostgreSQL and Redis on the VPS; account for the operational responsibility and single-host failure domain.
+- Production images: build in CI, publish versioned project images to GHCR, and have the VPS pull them. Do not build production images on a small VPS unless resource capacity is explicitly validated.
+- Medusa production topology: plan for separate server and worker instances; verify the exact version-specific configuration and command before implementation.
+- Product media: target S3-compatible object storage; Cloudflare R2 is the current preference, not yet configured or validated.
 
-## Tech Stack
+These are planning decisions, not a claim that any application, service, credentials, or deployment currently exists.
 
-- **Runtime**: Node.js 22 LTS (local machine has v24 — must pin to 22 via nvm-windows or Docker dev env)
-- **Backend**: Medusa v2 (Node 22, TypeScript, Express)
-- **Storefront**: Next.js (App Router, standalone output)
-- **DB**: PostgreSQL 15+
-- **Cache/Queue**: Redis 7 (mandatory in production — workflow engine + event bus)
-- **Object Storage**: Cloudflare R2 (S3-compatible)
-- **Reverse Proxy**: Caddy 2
-- **Email**: Resend (free tier 3K/month; ~1500 orders/mo with 2 emails each hits the cap)
-- **CI/CD**: GitHub Actions → GHCR → VPS pull
-- **Monitoring**: UptimeRobot (free) + Sentry (free 5K events/mo)
+## Safety and implementation constraints
 
-## Critical Path (must do before going live)
+- Never commit `.env` files, payment credentials, database passwords, JWT secrets, object-storage secrets, customer data, or production database artifacts.
+- Keep staging and production databases, Redis instances, domains, and credentials isolated.
+- Preserve existing user data and untracked files. Inspect before deleting or overwriting; ask before irreversible changes outside an explicitly authorized scope.
+- Run database migrations as part of a tested release process. Back up first and test migrations/restores in staging; do not assume reverting an application image reverses a database migration.
+- Do not accept live payments until payment provider configuration, webhook signature verification, idempotency, retry behavior, and failure paths have been tested.
+- Do not make legal, tax, or provider eligibility assumptions based solely on architecture notes; verify with authoritative sources and the relevant provider.
 
-1. **Stripe/PayPal webhook idempotency + retry testing** — the one critical gap flagged in the eng review. A lost webhook means payment received but order not confirmed (silent failure). Build idempotency into webhook handlers before accepting live payments.
-2. **Verify WorldFirst ACH as Stripe payout target** — test with a small payout before committing the full settlement path.
+## Documentation
 
-## Payment Flow (three-segment)
+- `README.md` is the project entrypoint and links to the detailed docs.
+- `docs/architecture.md` describes the proposed deployment architecture, open decisions, and rollout considerations.
+- `docs/medusa-learning-guide.md` introduces Medusa concepts for the project owner.
 
-```
-Checkout (Stripe/PayPal) → Stripe USD balance → ACH T+2 → US bank account → WorldFirst/PingPong → CNY
-```
-
-Do not confuse: WorldFirst/PingPong do settlement (USD→CNY), NOT checkout acquiring. Stripe does checkout acquiring.
-
-## Project Structure (post-scaffold)
-
-```
-apps/
-  backend/         # Medusa server (medusa-config.ts, src/api, src/modules, src/subscribers, src/workflows, src/jobs)
-  storefront/      # Next.js storefront (app/[countryCode]/)
-packages/          # Shared types/UI (optional)
-.github/workflows/ # CI build → GHCR
-docker-compose.yml          # Local dev: pg + redis + minio
-docker-compose.prod.yml     # Production: pull from GHCR
-docker-compose.staging.yml  # Same VPS, isolated, different ports
-Caddyfile                   # Reverse proxy + TLS
-.nvmrc                      # Pin Node 22 LTS
-```
-
-## Environment Variables
-
-Backend (`apps/backend/.env` / `.env.prod`):
-- `DATABASE_URL` — PostgreSQL connection string
-- `REDIS_URL` — Redis connection string
-- `STRIPE_API_KEY` — Stripe secret key
-- `JWT_SECRET` — Medusa admin JWT
-- `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_ENDPOINT`, `R2_BUCKET` — Cloudflare R2
-
-Storefront (`apps/storefront/.env.local` / `.env.prod`):
-- `MEDUSA_BACKEND_URL` — backend URL
-- `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY` — required on every Store API request via `x-publishable-api-key` header
-- `NEXT_PUBLIC_STRIPE_KEY` — Stripe publishable key
-
-Never commit `.env.prod` to git.
-
-## Useful Commands (post-scaffold)
-
-```bash
-# Local dev
-npx create-medusa-app@latest b2c-site    # Initial scaffold (run once)
-docker compose up -d                      # Start pg + redis + minio
-cd apps/backend && npm run dev            # Medusa server :9000 + admin /app
-cd apps/storefront && npm run dev         # Storefront :8000
-
-# Production deploy (on VPS)
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-npx medusa db:migrate                     # On schema changes
-
-# Staging (same VPS)
-docker compose -p b2cstaging pull
-docker compose -p b2cstaging up -d
-```
-
-## Local Dev Setup (Windows)
-
-Required tools (not yet installed on this machine):
-- **Git for Windows** — `create-medusa-app` internally uses git clone
-- **Docker Desktop** — provides pg/redis/minio containers via WSL2 backend
-- **nvm-windows** — to pin Node 22 LTS (current v24 may cause edge issues; v25+ is known broken with Medusa)
-
-WSL2 Ubuntu is NOT needed for local dev — Docker Desktop already uses WSL2 as its backend. Run directly in PowerShell/Windows. Only install WSL2 Ubuntu if hitting Windows-specific path/CRLF issues.
-
-## Cost Target
-
-~$5/month fixed infrastructure (Hetzner CAX21 + free tiers of R2/Cloudflare/GHCR/UptimeRobot/Sentry). No GMV-based platform fees. All other costs are variable (Stripe per-transaction, WorldFirst settlement percentage).
+Keep documentation explicit about what is confirmed, what is a recommendation, and what remains unverified. Match the user's beginner-friendly preference when explaining Medusa-specific concepts.
