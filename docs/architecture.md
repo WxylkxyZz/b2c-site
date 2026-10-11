@@ -248,7 +248,42 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 - 若迁移破坏兼容，应用回滚可能失败；必须按备份恢复计划操作，并评估恢复期间新增订单如何处理。
 - Production 部署流程必须有操作人、时间点、迁移结果、验证结果和回滚决定记录。
 
-## 7. 分阶段实施清单与验收
+## 7. 从当前文档仓库到上线的执行路线
+
+当前 GitHub `main` 的实现状态必须在开工时核实；如果仓库仍只有文档，不要在 VPS 上直接运行部署命令。先在开发环境生成并验证 Medusa 应用，再建立镜像流水线，最后才部署 VPS。
+
+### 每一步在哪里执行
+
+| 阶段 | 执行位置 | 负责人/动作 | 完成标志 |
+|---|---|---|---|
+| 1. 架构与版本核验 | 开发电脑（推荐已安装 Node/Docker 的 WSL Ubuntu） | 开发者按官方兼容要求确认版本、运行脚手架、记录锁文件；Claude 可协助执行非秘密的开发命令 | 正式 monorepo 有 backend/storefront，版本和锁文件可复现 |
+| 2. 本地应用验证 | 开发电脑 | 启动 PostgreSQL/Redis 与 Medusa/Storefront；在 Admin 建测试商品，确认 Store API/店面读取并完成测试购物车流程 | 后端、Admin、API 与店面 smoke test 通过 |
+| 3. 代码检查和镜像构建 | GitHub Actions runner（GitHub 托管） | 每次 PR 运行检查/构建；默认分支合并后可用 `GITHUB_TOKEN` 推送私有 GHCR 镜像 | CI 绿灯，镜像带 commit SHA/tag 且架构匹配；首期不自动部署生产 |
+| 4. VPS Staging | VPS | 用户配置 VPS、Cloudflare、Origin CA、GHCR read-only 凭据及测试环境变量；拉取指定镜像并测试 Nginx/Medusa/店面 | Storefront、Admin、API、媒体、后台任务及测试支付通过 |
+| 5. Production | VPS | 仅在 Staging、备份恢复、支付 webhook 等门槛通过后由用户批准部署；先备份，再迁移、启动和 smoke test | 正式流量通过 Cloudflare 到 Nginx；监控、回滚和维护责任明确 |
+
+### 仓库阶段与不可跳过的关卡
+
+1. **文档阶段**：先审核本架构文档与待确认项。此时若没有 `apps/backend`、`apps/storefront`、Dockerfile 和 Compose 应用服务，GitHub Actions 不能凭文档构建出商店。
+2. **本地脚手架阶段**：在一个干净的项目目录创建 Medusa v2 + 官方 Next.js Storefront monorepo；先检查目录为空、当前分支/remote 正确，避免在已有项目目录里生成嵌套目录。确定确切依赖和运行时版本后提交锁文件。
+3. **本地功能阶段**：先运行 Admin 与店面；只使用本地测试数据和支付测试模式。验证 Store API publishable key、CORS、商品发布状态、区域/币种。此时不需要 VPS、Cloudflare Origin CA 或真实支付密钥。
+4. **容器与 CI 阶段**：从实际生成的项目结构编写 Dockerfile、Compose 和 Actions workflow；先保证 clean checkout 可 build，再发布带不可变 commit SHA 的私有 GHCR 镜像。`GITHUB_TOKEN` 只由 Actions 使用，VPS 拉镜像使用独立只读凭据。
+5. **VPS Staging 阶段**：需要用户提供/自行录入 VPS、域名、Cloudflare zone、源站证书、测试 secrets、GHCR pull 权限；这些值不能靠本地 scaffold 自动获得，也不能提交 Git。
+6. **正式上线阶段**：需要独立 Production 凭据、异地备份恢复演练、迁移流程验证、支付/webhook 幂等重试、退款与订单状态测试及明确上线批准。未通过不得接收真实付款。
+
+### 用户需要准备的外部事项
+
+- GitHub Actions 已启用；仓库 Actions workflow permissions 允许 `GITHUB_TOKEN` 发布包（`packages: write`），包访问权限允许本仓库写入。
+- 私有 GHCR 包首次发布后，在 VPS 创建/使用单独的 `read:packages` 只读凭据；不是把 Actions token 复制到 VPS。
+- VPS 的供应商、地区、CPU 架构、RAM、磁盘、公网 IPv4/IPv6、SSH/控制台访问及异机备份目标。
+- Cloudflare 域名/zone、proxied DNS 记录、Origin CA 证书及安全保存路径、Full (strict) 设置；确认是否采用仅 Cloudflare 回源的防火墙规则及其更新责任。
+- Staging 与 Production 区分的数据库、Redis、R2/S3、支付、邮件和 webhook 配置。真实 secret 由用户在目标安全环境亲自录入，不通过聊天传递。
+
+### 当前范围边界
+
+本地 scaffold 和 CI 文件完善后，可以证明代码能构建以及本地服务可用；这不等于 VPS 已经部署。没有 VPS 主机信息、Cloudflare 证书、GHCR 只读授权和真实环境配置时，远程 Staging/Production 是明确阻塞项，不应猜测或代填。
+
+## 8. 分阶段实施清单与验收
 
 ### Phase 0 — 前置决策（用户需要参与）
 
@@ -295,7 +330,7 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 - [ ] 先做人工批准的 release；通过多次稳定发布后再评估自动部署。
 - [ ] 税务、配送、隐私和支付 provider 使用资格已由相应专业/供应商渠道确认。
 
-## 8. 故障定位速查
+## 9. 故障定位速查
 
 | 现象 | 首先检查 | 常见原因/修复方向 |
 |---|---|---|
@@ -317,7 +352,7 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 
 排错时一次只改变一个变量，记录“现象 → 日志 → 假设 → 修改 → 验证”；不要为了试错直接清空生产数据库或删除 Docker volumes。
 
-## 9. 变更发布规则
+## 10. 变更发布规则
 
 | 变更 | 需要的操作 |
 |---|---|
@@ -328,7 +363,7 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 | PostgreSQL 主版本升级 | 单独数据库升级计划、备份恢复演练；不可仅改 Compose tag |
 | Actions workflow/action SHA 更新 | 检查权限最小化、release notes、CI 测试；不自动触碰生产数据 |
 
-## 10. 官方文档与实施前再核验
+## 11. 官方文档与实施前再核验
 
 - [Medusa 安装与运行要求](https://docs.medusajs.com/learn/installation)
 - [Medusa Docker 安装指南](https://docs.medusajs.com/learn/installation/docker)
@@ -350,4 +385,4 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 
 ---
 
-本文不代替支付、税务、法律或供应商资格意见；图中架构是设计，未表示服务已经部署。执行真实构建前，先填全第 2 节的精确版本矩阵、第 7.1 节的用户输入项，并在 staging 通过所有验收门槛。
+本文不代替支付、税务、法律或供应商资格意见；图中架构是设计，未表示服务已经部署。执行真实构建前，先完成第 2 节的精确版本矩阵、第 7 节的 Phase 0 用户输入项，并通过 Staging 验收门槛。
