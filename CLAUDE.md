@@ -4,7 +4,7 @@ This file provides guidance for Claude Code when working in this repository.
 
 ## Project status
 
-The Windows `main` branch is the documentation and planning baseline. The application scaffold and local container implementation are now in `docs/update-medusa-local-validation` and are being reviewed through PR #1; do not treat them as merged into `main` until that PR lands. The WSL checkout is a separate working copy/branch and must not be assumed to match Windows unless its branch and commit are checked explicitly.
+The Medusa/Next.js scaffold and local container baseline have been added and verified locally on `docs/update-medusa-local-validation`. Check the current branch and commit before describing whether those changes have landed on Windows `main`. The WSL checkout is a separate working copy/branch and must not be assumed to match Windows unless its branch and commit are checked explicitly.
 
 Do not describe VPS, Cloudflare, GHCR, payment integration, or production deployment as deployed or verified. Before scaffolding or implementing, read `README.md`, `docs/architecture.md`, and `docs/medusa-learning-guide.md`. Verify commands, versions, configuration, provider behavior, and resource requirements against the actual generated project and matching official Medusa documentation.
 
