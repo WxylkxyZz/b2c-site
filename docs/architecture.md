@@ -52,7 +52,7 @@ Cloudflare 回源加密使用 Full (strict)；详细域名、TLS 与网络规则
 
 ### 2.1 实际本地 scaffold 版本清单（2026-10-12）
 
-本地 WSL scaffold 已完成并生成 lockfile；Medusa backend/Storefront build 均通过。Storefront 与根 workspace 已统一解析 React/React DOM `18.3.1`，解决官方 scaffold 初始 React 版本分叉导致的 React #31。Medusa Admin、`/health`、Store API regions 和商品查询均已验证；Publishable API Key 已关联 `US` Sales Channel，Store API 对 US 返回 1 个商品。搜索索引 `product_v1` 在 Medusa 重启时完成 seed，version 1 状态为 `ready`、设为 active，索引 1 个商品文档；使用 `POST /store/search` 搜索成功。曾经的空列表根因是 key 绑定了旧 Default Sales Channel，而商品在 `US` 渠道；曾经的 Search 错误则因迁移只创建 pending 索引，启动 seed 尚未完成。后端与店面本地 Docker 镜像现已构建、启动并通过 Admin、API、Search 和商品页 smoke test。当前仍有 3 个 Store 重复引用同名 Default Sales Channel，尚未清理；购物车/配送用户已完成本地测试，但无支付 provider，支付流程未验收；Staging/VPS 也未部署。
+本地 WSL scaffold 已完成并生成 lockfile；Medusa backend/Storefront build 均通过。Storefront 与根 workspace 已统一解析 React/React DOM `18.3.1`，解决官方 scaffold 初始 React 版本分叉导致的 React #31。Medusa Admin、`/health`、Store API regions 和商品查询均已验证；Publishable API Key 已关联 `US` Sales Channel，Store API 对 US 返回 1 个商品。搜索索引 `product_v1` 在 Medusa 重启时完成 seed，version 1 状态为 `ready`、设为 active，索引 1 个商品文档；使用 `POST /store/search` 搜索成功。曾经的空列表根因是 key 绑定了旧 Default Sales Channel，而商品在 `US` 渠道；曾经的 Search 错误则因迁移只创建 pending 索引，启动 seed 尚未完成。后端与店面本地 Docker 镜像现已构建、启动并通过 Admin、API、Search 和商品页 smoke test，用户已确认容器版 Admin 登录成功。当前仍有 3 个 Store 重复引用同名 Default Sales Channel，尚未清理；购物车/配送用户已完成本地测试，但无支付 provider，支付流程未验收；Staging/VPS 也未部署。
 
 | 组件 | 已选版本/状态 | 固定位置或验证 |
 |---|---|---|
@@ -62,7 +62,7 @@ Cloudflare 回源加密使用 Full (strict)；详细域名、TLS 与网络规则
 | React / React DOM | `18.3.1` resolved for the root and Storefront workspace | Root `package.json` + `package-lock.json`; verified with `npm ls` after install |
 | Node.js | `22.23.3` | `.nvmrc`；本地/CI/Docker 尽可能使用同一 LTS 线 |
 | npm | `10.9.9` | root `packageManager` 字段 |
-| PostgreSQL / Redis | PostgreSQL `15-alpine`、Redis `7-alpine` 本地容器健康 | `docker-compose.local.yml`；本机 test volume 保留，生产镜像/patch/digest 待冻结 | VPS 版本和镜像 digest 待确定 |
+| PostgreSQL / Redis | PostgreSQL `15-alpine` / Redis `7-alpine` 本地容器健康；生产镜像版本待冻结 | `docker-compose.local.yml`；本机测试 volume 保留，VPS patch/digest 待核验 |
 | Docker Engine / Compose | WSL 本地当前 `29.1.3` / `2.40.3` | VPS 版本待确定；不是应用依赖锁版本 |
 | Nginx / Actions | 尚未配置 | Nginx 镜像 digest 与 Actions commit SHA 在构建部署阶段核定 |
 
@@ -72,7 +72,7 @@ Cloudflare 回源加密使用 Full (strict)；详细域名、TLS 与网络规则
 - 本地 Compose 继续使用原有 `b2csite-local` PostgreSQL/Redis 服务和 PostgreSQL 持久化卷，不迁移或清除本地测试数据。为避免与当前宿主机进程端口冲突，容器化 Admin/API 使用 `http://localhost:19000`，店面使用 `http://localhost:18000`，仅绑定回环地址。
 - 复制 `.env.container.example` 为被 Git 忽略的 `.env.container.local`，使用独立本地 JWT/Cookie/MFA secrets，并填入现有本地 Publishable API Key。使用 `--env-file .env.container.local` 启动 Compose；env 文件不会复制进镜像。Storefront 的 `NEXT_PUBLIC_*` 会编译进浏览器 bundle，publishable key 是公开标识，不可把 Stripe/支付 secret 放入这些变量。
 - 本地 Compose backend 保持 `NODE_ENV=production`，但因 Admin/API 仅绑定 `127.0.0.1` 的明文 HTTP，本地专用环境变量 `LOCAL_HTTP_ADMIN=true` 会在 Medusa `medusa-config.ts` 设置 `cookieOptions.secure=false`，供本机测试登录使用。这个覆盖仅在 `docker-compose.local.yml`，禁止复制到 VPS/公网；VPS 通过 HTTPS 提供 Admin，保持 Secure session cookie 默认值。
-- 已确认登录循环的代码根因：Medusa `2.21.2` 在 production/staging 默认下发 Secure session cookie；浏览器通过本地 HTTP 访问时不会保存/回送该 Cookie。曾尝试在本地把 NODE_ENV 改为 development，但生产镜像缺少开发依赖并会尝试在只读 Admin build 目录写文件，因此已恢复 production 模式，改用局部 `cookieOptions` override。改动后的后端 build 通过、容器健康 `/health=200`；错误密码探测仍被 API 正确拒绝。成功凭据的浏览器登录需要用户自行复测，不读取/处理密码。
+- 已确认登录循环的代码根因：Medusa `2.21.2` 在 production/staging 默认下发 Secure session cookie；浏览器通过本地 HTTP 访问时不会保存/回送该 Cookie。曾尝试在本地把 NODE_ENV 改为 development，但生产镜像缺少开发依赖并会尝试在只读 Admin build 目录写文件，因此已恢复 production 模式，改用局部 `cookieOptions` override。改动后的后端 build 通过、容器健康 `/health=200`；用户已实际验证 Admin 登录正常。
 - backend image 与 storefront image 分别执行 `docker build --file apps/backend/Dockerfile ... .` / `docker compose ... build storefront`。Buildx 当前环境未安装；此阶段仅验证本机 amd64 单平台镜像，不代表 GHCR multi-platform 发布已完成。
 - 仅容器化前后端服务；数据库卷需在部署/停止时保留。不要使用 `docker compose down -v`。本地容器测试与 VPS 全新数据库部署相互独立。
 
