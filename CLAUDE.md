@@ -4,9 +4,9 @@ This file provides guidance for Claude Code when working in this repository.
 
 ## Project status
 
-This repository is currently in the planning/documentation phase on Windows `main`. It contains the proposed architecture and learning guide; it does not yet contain the Medusa or Next.js application implementation. The WSL checkout is a separate branch/copy and must not be assumed to match this repository.
+The Medusa/Next.js scaffold and local container baseline have been added and verified locally on this branch. Check the current branch and commit before describing whether those changes have landed on Windows `main`. The WSL checkout is a separate working copy/branch and must not be assumed to match Windows unless its branch and commit are checked explicitly.
 
-Do not describe proposed infrastructure as deployed or verified. Before scaffolding or implementing, read `README.md`, `docs/architecture.md`, and `docs/medusa-learning-guide.md`. Verify commands, versions, configuration, provider behavior, and resource requirements against the actual generated project and matching official Medusa documentation.
+Do not describe VPS, Cloudflare, GHCR, payment integration, or production deployment as deployed or verified. Before scaffolding or implementing, read `README.md`, `docs/architecture.md`, and `docs/medusa-learning-guide.md`. Verify commands, versions, configuration, provider behavior, and resource requirements against the actual generated project and matching official Medusa documentation.
 
 ## Current direction
 
@@ -36,3 +36,22 @@ These are planning decisions, not a claim that any application, service, credent
 - `docs/medusa-learning-guide.md` introduces Medusa concepts for the project owner.
 
 Keep documentation explicit about what is confirmed, what is a recommendation, and what remains unverified. Match the user's beginner-friendly preference when explaining Medusa-specific concepts.
+
+## Skill routing
+
+When the user's request matches an available skill, invoke it via the Skill tool. Route only to skills in the session's available-skills list; answer directly for quick questions or small scoped edits.
+
+Key routing rules:
+- Product ideas/brainstorming → invoke `/office-hours`
+- Strategy/scope → invoke `/plan-ceo-review`
+- Architecture → invoke `/plan-eng-review`
+- Design system/plan review → invoke `/design-consultation` or `/plan-design-review`
+- Full review pipeline → invoke `/autoplan`
+- Bugs/errors → invoke `/investigate`
+- QA/testing site behavior → invoke `/qa` or `/qa-only`
+- Code review/diff check → invoke `/review`
+- Visual polish → invoke `/design-review`
+- Ship/deploy/PR → invoke `/ship` or `/land-and-deploy`
+- Save progress → invoke `/context-save`
+- Resume context → invoke `/context-restore`
+- Author a backlog-ready spec/issue → invoke `/spec`

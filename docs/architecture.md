@@ -50,13 +50,40 @@ Cloudflare 回源加密使用 Full (strict)；详细域名、TLS 与网络规则
 
 ## 2. 版本与依赖锁定规则
 
-### 2.1 原则：脚手架时核验，第一次构建后锁定
+### 2.1 实际本地 scaffold 版本清单（2026-10-12）
+
+本地 WSL scaffold 已完成并生成 lockfile；Medusa backend/Storefront build 均通过。Storefront 与根 workspace 已统一解析 React/React DOM `18.3.1`，解决官方 scaffold 初始 React 版本分叉导致的 React #31。Medusa Admin、`/health`、Store API regions 和商品查询均已验证；Publishable API Key 已关联 `US` Sales Channel，Store API 对 US 返回 1 个商品。搜索索引 `product_v1` 在 Medusa 重启时完成 seed，version 1 状态为 `ready`、设为 active，索引 1 个商品文档；使用 `POST /store/search` 搜索成功。曾经的空列表根因是 key 绑定了旧 Default Sales Channel，而商品在 `US` 渠道；曾经的 Search 错误则因迁移只创建 pending 索引，启动 seed 尚未完成。后端与店面本地 Docker 镜像现已构建、启动并通过 Admin、API、Search 和商品页 smoke test，用户已确认容器版 Admin 登录成功。当前仍有 3 个 Store 重复引用同名 Default Sales Channel，尚未清理；购物车/配送用户已完成本地测试，但无支付 provider，支付流程未验收；Staging/VPS 也未部署。
+
+| 组件 | 已选版本/状态 | 固定位置或验证 |
+|---|---|---|
+| Medusa CLI scaffolder | npm 包 `create-medusa-app@latest`，执行时解析到当时发布版；生成后即不用于重建 | 初次 scaffold 日为 2026-10-12；Medusa 应用 packages 单独 pin |
+| Medusa backend / `@medusajs/*` | `2.21.2` | `apps/backend/package.json` + root `package-lock.json` |
+| Next.js | `15.5.24` | `apps/storefront/package.json` + root lockfile |
+| React / React DOM | `18.3.1` resolved for the root and Storefront workspace | Root `package.json` + `package-lock.json`; verified with `npm ls` after install |
+| Node.js | `22.23.3` | `.nvmrc`；本地/CI/Docker 尽可能使用同一 LTS 线 |
+| npm | `10.9.9` | root `packageManager` 字段 |
+| PostgreSQL / Redis | PostgreSQL `15-alpine` / Redis `7-alpine` 本地容器健康；生产镜像版本待冻结 | `docker-compose.local.yml`；本机测试 volume 保留，VPS patch/digest 待核验 |
+| Docker Engine / Compose | WSL 本地当前 `29.1.3` / `2.40.3` | VPS 版本待确定；不是应用依赖锁版本 |
+| Nginx / Actions | 尚未配置 | Nginx 镜像 digest 与 Actions commit SHA 在构建部署阶段核定 |
+
+### 2.4 本地容器化基线（2026-10-12）
+
+- 本地 Dockerfile 使用 `node:22.23.3-bookworm-slim`，分别构建 Medusa backend 和 Next.js standalone Storefront；Docker build context 在 monorepo 根目录。
+- 本地 Compose 继续使用原有 `b2csite-local` PostgreSQL/Redis 服务和 PostgreSQL 持久化卷，不迁移或清除本地测试数据。为避免与当前宿主机进程端口冲突，容器化 Admin/API 使用 `http://localhost:19000`，店面使用 `http://localhost:18000`，仅绑定回环地址。
+- 复制 `.env.container.example` 为被 Git 忽略的 `.env.container.local`，使用独立本地 JWT/Cookie/MFA secrets，并填入现有本地 Publishable API Key。使用 `--env-file .env.container.local` 启动 Compose；env 文件不会复制进镜像。Storefront 的 `NEXT_PUBLIC_*` 会编译进浏览器 bundle，publishable key 是公开标识，不可把 Stripe/支付 secret 放入这些变量。
+- 本地 Compose backend 保持 `NODE_ENV=production`，但因 Admin/API 仅绑定 `127.0.0.1` 的明文 HTTP，本地专用环境变量 `LOCAL_HTTP_ADMIN=true` 会在 Medusa `medusa-config.ts` 设置 `cookieOptions.secure=false`，供本机测试登录使用。这个覆盖仅在 `docker-compose.local.yml`，禁止复制到 VPS/公网；VPS 通过 HTTPS 提供 Admin，保持 Secure session cookie 默认值。
+- 已确认登录循环的代码根因：Medusa `2.21.2` 在 production/staging 默认下发 Secure session cookie；浏览器通过本地 HTTP 访问时不会保存/回送该 Cookie。曾尝试在本地把 NODE_ENV 改为 development，但生产镜像缺少开发依赖并会尝试在只读 Admin build 目录写文件，因此已恢复 production 模式，改用局部 `cookieOptions` override。改动后的后端 build 通过、容器健康 `/health=200`；用户已实际验证 Admin 登录正常。
+- backend image 与 storefront image 分别执行 `docker build --file apps/backend/Dockerfile ... .` / `docker compose ... build storefront`。Buildx 当前环境未安装；此阶段仅验证本机 amd64 单平台镜像，不代表 GHCR multi-platform 发布已完成。
+- 仅容器化前后端服务；数据库卷需在部署/停止时保留。不要使用 `docker compose down -v`。本地容器测试与 VPS 全新数据库部署相互独立。
+
+
+### 2.5 原则：脚手架时核验，第一次构建后锁定
 
 Medusa、Next.js、Node、数据库镜像和 GitHub Actions 的版本更新节奏不同。现在不把一组未经同一兼容矩阵验证的 patch 号假装成最终版本；但实施时必须形成精确版本清单，不能长期使用 `@latest`、`node:22`、`postgres:15`、`redis:7` 或可移动 `latest` 标签来决定生产实际版本。
 
 Medusa 官方安装文档当前说明的 Node.js 基线为 **20.19.0+ 或 22.12.0+ 的 LTS**；Next.js Starter 还受当前 Next.js/React 要求约束。项目建议首选 Node 22 LTS，但脚手架日的官方兼容要求优先于此建议。检查：[Medusa 安装要求](https://docs.medusajs.com/learn/installation)、[Next.js 系统要求](https://nextjs.org/docs/app/getting-started/installation#system-requirements)、[Node.js 发布计划](https://nodejs.org/en/about/previous-releases)。
 
-### 2.2 版本矩阵（实施时填写精确值并提交）
+### 2.6 版本矩阵（实施时填写精确值并提交）
 
 | 层 | 规划基线 | 精确版本如何确定/固定 | 不能做什么 |
 |---|---|---|---|
@@ -176,7 +203,17 @@ Cloudflare 代理 → Nginx → Compose 服务时，Nginx 上游使用 Compose D
 
 Nginx 需将原始 Host、客户端 IP 链、HTTPS/转发协议等必要头传给上游；Medusa/Next 是否信任代理头、cookie secure 行为和重定向 URL 要按实际版本配置与测试。不要直接照抄未经验证的示例配置。Compose 的 `depends_on` 启动顺序不能代替应用重试和健康检查。
 
-### 4.4 首次配置与切流顺序
+### 4.5 Nginx 与 Cloudflare 的额外安全约束
+
+- Nginx 和每个 upstream 必须共享 Compose 网络；upstream 使用容器内监听端口，应用端口不需要发布到宿主机。`expose` 不是访问控制边界。
+- Docker 发布的端口可能绕过部分主机防火墙规则（包括某些 UFW 配置）。如果启用 Cloudflare-only 源站访问，需同时检查 VPS 云防火墙和宿主机防火墙的实际数据路径；不要只凭 UFW 规则推断公网不可达。优先在供应商网络防火墙限制 IPv4/IPv6 来源，配置后从外网验证。
+- Cloudflare IP allowlist 只限制网络来源范围，不等于访客认证，也不能证明请求来自本账号的 Cloudflare zone。按 Cloudflare 文档维护 IPv4/IPv6 ranges；另行评估 Cloudflare Authenticated Origin Pulls。保留并测试 SSH/控制台救援。
+- Nginx 对不匹配 `server_name` 的未知 Host/SNI 应使用默认拒绝站点，不应回落到店面或 API。Full (strict) 要求 Nginx 443 listener 提供有效、未过期且覆盖回源 Host 的证书；逐个测试 `shop` 和 `api`。
+- 若要记录真实访客 IP，配置 Nginx real-IP 只信任 Cloudflare 官方 IP 段，并仅在来自这些段的连接中读取 `CF-Connecting-IP`；不可信任任意客户端提交的转发头。
+- 按 Medusa 实际版本检查 Admin UI、Admin API/auth 使用的所有路径后再添加 Basic Auth、Cloudflare Access 或 IP 限制。保护 `/app` 但漏掉管理 API并不完整；保护整个 `api` host 又可能挡住 Store API、webhook 和登录。需要逐条验证 Admin 登录、Store API、支付 webhook。
+- Nginx 通常应保留 API 原始 path，并正确转发 Host 与 HTTPS scheme。不要在未逐路径测试前对 API/webhook 应用 Cloudflare 缓存或交互式 WAF challenge。
+
+### 4.6 首次配置与切流顺序
 
 1. 创建 Cloudflare proxied DNS 记录，并确认域名解析到预期 zone/代理状态。
 2. 生成 Origin CA 证书，安全放入 VPS 路径；配置 Nginx 只读挂载证书/私钥。此处不将证书内容存入仓库。
@@ -189,7 +226,7 @@ Nginx 需将原始 Host、客户端 IP 链、HTTPS/转发协议等必要头传�
 
 **实施前必须回填并验证：**实际域名、VPS IPv4/IPv6、Medusa/Next 容器端口、Admin path、health path、Storefront 后端 env 名、Medusa CORS 三项、Nginx forwarded headers、Cloudflare zone/proxy、Origin 证书路径及续期提醒责任人。
 
-### 4.5 Nginx/Cloudflare 故障排查
+### 4.7 Nginx/Cloudflare 故障排查
 
 | 现象 | 优先检查 | 常见原因 |
 |---|---|---|
@@ -202,7 +239,7 @@ Nginx 需将原始 Host、客户端 IP 链、HTTPS/转发协议等必要头传�
 | 直连 VPS 显示证书不受信任 | 确认请求是否绕过 Cloudflare | Origin CA 只被 Cloudflare 用于源站验证；直连需公开信任证书 |
 | DB/Redis 从外网可连 | Compose `ports`、云防火墙和 `ss -lntp` | 错误发布 5432/6379 或绑定 `0.0.0.0`；移除端口映射并关闭防火墙入口 |
 
-### 4.6 其他网络约束
+### 4.8 其他网络约束
 
 - 生产 Compose 用 `image:` 和固定 image tag，不在 VPS 上 `build:`。
 - 配置健康检查、restart policy 和日志轮转；`depends_on` 不能代替应用重试。
@@ -236,6 +273,23 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 
 ### PostgreSQL 与媒体备份
 
+- 本地测试与 VPS Staging/Production 使用彼此独立的 PostgreSQL 数据库、Redis、对象存储配置、环境变量和 Publishable API Key。默认不将本地数据库 dump 导入 VPS；本地测试商品、测试订单、Store、渠道和 key 不会随应用镜像部署。
+- 应用镜像包含应用代码与构建产物，不包含 PostgreSQL/Redis 数据卷。首次部署到空 VPS 数据库时，需先按锁定版本运行数据库迁移，再使用经过核验的一次性 bootstrap 流程初始化必要数据；不要把开发机数据库当作生产初始化模板。
+
+### 首次创建 Medusa Admin 管理员
+
+数据库 migration 和 Store/Region/channel 初始化不会自动创建可登录的管理员用户。Medusa `2.21.2` 已核验提供 `medusa user` CLI 命令。VPS backend 已连上生产 DB/Redis 且 migration 完成后，在 backend 容器中创建一次性管理员邀请：
+
+```sh
+docker compose exec -T backend npm exec medusa -- user --email admin@example.com --invite
+```
+
+CLI 会输出一次性 invite token。只在可信 VPS 终端读取该 token，通过 `https://<Admin域名>/invite?token=<token>` 打开邀请并由用户自己设置密码；不要将 token 粘贴到聊天、Git、shell history 或持久化日志。若直接使用 `--password` 创建用户，密码会作为进程参数出现，因此不建议在共享主机/多用户环境这样做。正式环境使用独立邮箱与强密码；不要复制本地 `admin@gmail.com` 或测试密码。
+
+初次成功登录后，再按最小权限创建日常管理员账户并安全保存恢复方式。不要把管理用户密码放进 Docker image build args、Compose 或 Storefront 的 `NEXT_PUBLIC_*` 变量。
+
+- 本地演示商品当前变体设置为 `manage_inventory=true`、`allow_backorder=false`，库存地点显示 stocked quantity 100、reserved 0；US 销售渠道关联了该库存地点。Store API 请求 `+variants.inventory_quantity` 返回 100。因此若商品详情页显示 `Out of stock`，不要先改库存或打开 backorder；先强制刷新并等待页面加载，再确认所选变体。若仍显示，需检查页面实际接收的 variant/options 与 Store API 数据，定位 Storefront 状态判断问题。
+- VPS PostgreSQL 数据应放在持久化卷中。普通应用镜像更新或替换 backend/storefront 容器不应删除数据库卷；删除 Compose volume、执行重置或重新创建数据库可能造成数据永久丢失。任何此类操作前都要确认目标环境、备份并获得明确授权。
 - 备份 PostgreSQL 到 VPS 之外（加密、限制访问、设置保留期）；定义可接受的数据丢失窗口和恢复时间。
 - 定期在隔离环境实际恢复并检查商品、订单、用户、关联关系；记录恢复用时和步骤。
 - 对 R2/S3 对象文件单独定义版本控制/复制/恢复策略；数据库 dump 通常只存 metadata/URL，不含图片 bytes。
@@ -250,7 +304,7 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 
 ## 7. 从当前文档仓库到上线的执行路线
 
-当前 GitHub `main` 的实现状态必须在开工时核实；如果仓库仍只有文档，不要在 VPS 上直接运行部署命令。先在开发环境生成并验证 Medusa 应用，再建立镜像流水线，最后才部署 VPS。
+当前 Publishable API Key 已在 Admin 关联到 `US` Sales Channel；Store API `/store/products` 查询返回 1 个已发布商品。Medusa 重启后 product search index seed 完成，索引已激活并且 `POST /store/search` 查询成功。仍有重复 Store/默认销售渠道待整理；浏览器商品列表、购物车、结账、支付及 Staging/VPS 流程还未完整验收。此时不得写成已具备生产部署条件。
 
 ### 每一步在哪里执行
 
@@ -258,18 +312,20 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 |---|---|---|---|
 | 1. 架构与版本核验 | 开发电脑（推荐已安装 Node/Docker 的 WSL Ubuntu） | 开发者按官方兼容要求确认版本、运行脚手架、记录锁文件；Claude 可协助执行非秘密的开发命令 | 正式 monorepo 有 backend/storefront，版本和锁文件可复现 |
 | 2. 本地应用验证 | 开发电脑 | 启动 PostgreSQL/Redis 与 Medusa/Storefront；在 Admin 建测试商品，确认 Store API/店面读取并完成测试购物车流程 | 后端、Admin、API 与店面 smoke test 通过 |
-| 3. 代码检查和镜像构建 | GitHub Actions runner（GitHub 托管） | 每次 PR 运行检查/构建；默认分支合并后可用 `GITHUB_TOKEN` 推送私有 GHCR 镜像 | CI 绿灯，镜像带 commit SHA/tag 且架构匹配；首期不自动部署生产 |
-| 4. VPS Staging | VPS | 用户配置 VPS、Cloudflare、Origin CA、GHCR read-only 凭据及测试环境变量；拉取指定镜像并测试 Nginx/Medusa/店面 | Storefront、Admin、API、媒体、后台任务及测试支付通过 |
-| 5. Production | VPS | 仅在 Staging、备份恢复、支付 webhook 等门槛通过后由用户批准部署；先备份，再迁移、启动和 smoke test | 正式流量通过 Cloudflare 到 Nginx；监控、回滚和维护责任明确 |
+| 3. 本地容器化与代码检查 | 开发电脑 + GitHub Actions runner | 本地 Docker Compose 使用既有测试数据库验收容器；PR workflow 后续运行锁文件安装、lint/typecheck/test/build | 本地 images 可启动、CI 绿灯；默认分支合并后可发布带 commit SHA/tag 且架构匹配的私有 GHCR 镜像；首期不自动部署生产 |
+| 4. VPS Staging | VPS | 用户配置 VPS、Cloudflare、Origin CA、GHCR read-only 凭据及测试环境变量；使用全新独立数据库/数据卷部署指定镜像 | Storefront、Admin、API、媒体、后台任务和可用的测试流程通过 |
+| 5. Production | VPS | 仅在 Staging、备份恢复、支付 webhook 等门槛通过后由用户批准部署；新建生产数据环境，先迁移/初始化，再启动和 smoke test | 正式流量通过 Cloudflare 到 Nginx；监控、回滚和维护责任明确 |
 
 ### 仓库阶段与不可跳过的关卡
 
 1. **文档阶段**：先审核本架构文档与待确认项。此时若没有 `apps/backend`、`apps/storefront`、Dockerfile 和 Compose 应用服务，GitHub Actions 不能凭文档构建出商店。
 2. **本地脚手架阶段**：在一个干净的项目目录创建 Medusa v2 + 官方 Next.js Storefront monorepo；先检查目录为空、当前分支/remote 正确，避免在已有项目目录里生成嵌套目录。确定确切依赖和运行时版本后提交锁文件。
-3. **本地功能阶段**：先运行 Admin 与店面；只使用本地测试数据和支付测试模式。验证 Store API publishable key、CORS、商品发布状态、区域/币种。此时不需要 VPS、Cloudflare Origin CA 或真实支付密钥。
-4. **容器与 CI 阶段**：从实际生成的项目结构编写 Dockerfile、Compose 和 Actions workflow；先保证 clean checkout 可 build，再发布带不可变 commit SHA 的私有 GHCR 镜像。`GITHUB_TOKEN` 只由 Actions 使用，VPS 拉镜像使用独立只读凭据。
-5. **VPS Staging 阶段**：需要用户提供/自行录入 VPS、域名、Cloudflare zone、源站证书、测试 secrets、GHCR pull 权限；这些值不能靠本地 scaffold 自动获得，也不能提交 Git。
-6. **正式上线阶段**：需要独立 Production 凭据、异地备份恢复演练、迁移流程验证、支付/webhook 幂等重试、退款与订单状态测试及明确上线批准。未通过不得接收真实付款。
+3. **本地功能阶段**：先运行 Admin 与店面；只使用本地测试数据和支付测试模式。验证 Store API publishable key、CORS、商品发布状态、区域/币种。此时不需要 VPS、Cloudflare Origin CA 或真实支付密钥。本地数据是开发测试数据，不作为生产数据迁移方案。用户已完成无支付情况下的商品、购物车和配送本地测试。
+4. **本地容器化阶段**：为 backend/storefront 建 Dockerfile 与 Compose app services；保持本地 PostgreSQL/Redis 数据卷不变，先在开发电脑启动、验收容器化应用。Next.js `NEXT_PUBLIC_*` 构建变量只用本地公开值，secret 不进入镜像。
+5. **CI/GHCR 阶段**：为容器化项目添加 GitHub Actions；先保证 clean checkout 可 build，再发布带不可变 commit SHA 的私有 GHCR 镜像。`GITHUB_TOKEN` 只由 Actions 使用，VPS 拉镜像用独立只读凭据；本地构建验证不等于 GHCR multi-platform 已验证。应用镜像只发布代码，不打包本地 PostgreSQL/Redis 数据卷。
+6. **VPS Staging 阶段**：默认从新的空 PostgreSQL/Redis 数据开始，使用独立持久化卷和 staging 凭据，不导入本地测试数据库。先执行锁定版本要求的数据库迁移，再按核验过的一次性 bootstrap 步骤初始化 Admin、Region、规范渠道与 key；之后仅创建明确标记的测试商品和测试订单。初始化脚本运行前必须确认它不会重复或部分写入。
+7. **Production 阶段**：Production 使用与本地及 Staging 隔离的数据库、Redis、对象存储和 credentials。先按迁移与初始化流程创建空白生产环境，再由用户在 Admin 建立正式商品与运营数据；不复制本地测试商品/订单/用户/Publishable API Key。需要正式导入业务数据时，单独制定、核对和批准迁移方案。
+8. **正式上线关卡**：需要独立 Production 凭据、异地备份恢复演练、迁移流程验证、支付/webhook 幂等重试、退款与订单状态测试及明确上线批准。未通过不得接收真实付款。
 
 ### 用户需要准备的外部事项
 
@@ -285,65 +341,81 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 
 ## 8. 分阶段实施清单与验收
 
-### Phase 0 — 前置决策（用户需要参与）
+### Phase 0 — 前置决策
 
-- [ ] 确认仓库 owner/name、默认分支，以及是否启用 GitHub Actions。
-- [ ] 确认 GHCR 使用私有包；Actions 允许 `GITHUB_TOKEN` 发布 package。
-- [ ] 准备 VPS：供应商、地区、CPU 架构（x86_64/ARM64）、RAM、磁盘、备份目的地、SSH 管理方式。
-- [ ] 确认 Storefront/API/Admin 的主机名和路径策略（用户已熟悉域名/HTTPS，无需在此重复基础知识）。
-- [ ] 如走本方案 Cloudflare 路线：建立 `shop` / `api` 的 Proxied DNS 记录；创建 Origin CA 证书并私密安装到 VPS；设置 Full (strict)；决定并安全应用仅允许 Cloudflare 回源的防火墙规则。
-- [ ] 验证 VPS 是否实际使用 IPv6 后才配置 AAAA；确认 Cloudflare IP allowlist 更新责任和 SSH/控制台救援入口。
-- [ ] 决定图片存储服务与账号；正式支付/邮件服务可以先不配置，用测试模式验证。
-- [ ] 所有私钥和真实 secrets 由用户亲自在 GitHub/VPS/provider 后台输入，不在对话中传递。
+- [ ] 核对官方安装要求，并选定 Medusa、Next.js、Node、npm 与数据库版本；本地 Node 22 已安装，但 scaffold 时仍要核验。
+- [ ] 确认仓库 owner/name、默认分支，以及 GitHub Actions 是否启用；GHCR 使用私有包。
+- [ ] 准备 VPS 规格/架构、公网地址、SSH/控制台访问及异机备份目标；当前阶段不需要把 VPS 密码交给开发代理。
+- [ ] 确认实际域名；如使用 Cloudflare 路线，准备 Proxied DNS、Origin CA 证书及 Full (strict)，但本地开发阶段无需证书。
+- [ ] 决定图像存储服务；支付/邮件可以先使用测试模式或暂缓，不录入真实凭据。
 
-### Phase 1 — 本地 Medusa 能力验证
+### Phase 1 — WSL scaffold 和本地 Medusa 验证
 
-- [ ] 官方脚手架生成 monorepo，确认 backend、storefront 各自入口、Node 版本、包管理器、锁文件。
-- [ ] 生成具体依赖版本清单；检查 `npm ls`/lockfile 中 Medusa 包版本一致。
-- [ ] Admin 建立一个测试商品；Storefront 通过 Store API 展示；验证价格/区域/币种读取。
-- [ ] 验收购物车和测试支付/模拟支付；不接受真实款项。
-- [ ] 记录问题时附 Medusa 版本、Node/npm 版本、执行目录、命令、完整错误栈（先移除 secrets）。
+- [x] 在干净的 WSL checkout 中保留现有 Git 历史；先确认目录和分支，避免创建嵌套项目。
+- [x] 使用官方 `create-medusa-app` 和 DTC Starter 生成 Medusa `2.21.2` + Next.js Storefront；执行时显式使用 npm 与 Node 22。
+- [x] 安装依赖并记录 root lockfile；React/ReactDOM 已从 starter 的 `19.0.5` 对齐到 `18.3.1` 共享解析，修复 Next 错误页 prerender 的 React #31。
+- [x] PostgreSQL 和 Redis 在独立本地 Compose project 中启动；Medusa `/health`、Admin `/app` 返回 200。
+- [x] 用户在 Admin 建立后台账号、创建 publishable key，并自行写入被 Git 忽略的 `apps/storefront/.env.local`；无需反复让开发代理创建 key。
+- [x] 使用该 key 验证 Store API regions 查询成功；进一步检查发现 key 起初关联旧的 Default Sales Channel，而商品关联 `US` Sales Channel，因此商品列表为空。用户将 key 关联到 `US` 后，`/store/products` 对 US 返回 HTTP 200、1 个商品。
+- [x] Backend production build 和 Storefront production build 均通过。
+- [x] 在 Admin 建立/检查本地测试商品，确认商品已发布、关联 US 销售渠道并有 USD 价格；Store API 返回 1 个 US 商品，用户已确认 Storefront `/us` 页面显示商品。
+- [ ] 整理重复初始化数据：当前有 3 个 Store 各自默认指向一个同名 Default Sales Channel。目标禁用渠道 `sc_01M4Q1332NSEPWH1DSWC65N4W1` 仍被 Store `store_01M4Q1333GMAX50J6HXN4E4EHM` 设为默认，因此 Medusa 拒绝删除。`is_disabled=true` 不会解除 Store 的 default 引用；先在 Admin 确认唯一要保留的 Store/channel，再调整默认关系、产品关联和 key 关联后才能删除重复项。不要绕过 workflow 直接 SQL 删除/更新。
+- [x] 搜索索引问题已定位并解决：`npm exec medusa -- db:migrate:search` 只创建了 pending version；Medusa 后端重启后日志显示 product index seed 完成，1 个商品文档同步，version 1 状态 `ready` 且 active。对 `POST /store/search` 的实际查询返回该商品。若以后索引无 active version，先核对迁移状态；迁移后启动 backend 并查看 seed/ingestion 日志，再查索引同步/active 状态和 POST 搜索结果。不要只看 migration 命令成功，也不要用 GET 调用搜索路由。
+- [x] 用无支付 provider 的测试流程验证商品浏览、购物车、地址与配送；未完成支付/下单测试，不接收真实款项。
+- [x] 已记录具体版本、执行命令、端口、Admin path、环境变量名和 CORS；真实密钥只存在被忽略的本地 `.env`。
 
-### Phase 2 — 构建镜像与 Actions
+**关键提醒：**新建/重建本地环境时，在 Admin 创建/找到 Publishable API Key，并写入被忽略的 `apps/storefront/.env.local` 的 `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`。同时将 key 关联到店面实际使用的 Sales Channel，并确认商品也关联同一渠道；产品有适用的 US/USD 价格且状态为 published。初始化脚本 `initial-data-seed.ts` 不是幂等脚本：重复执行可能在已有 Region/国家数据处失败，却已部分写入 Store、销售渠道或 key，造成重复记录。重跑前必须先读代码、查当前 Admin 数据并规划安全补齐，不能假设失败会回滚全部写入。开发代理仅验证 key 是否设置或接口结果，不在聊天、命令输出或文档显示 key 值。
 
-- [ ] 后端和店面各自 Dockerfile 能从干净 checkout 构建。
-- [ ] CI 使用锁文件安装依赖；Node 与本地基线一致；Actions 版本 pin 到 SHA。
-- [ ] 首次发布确认 `GITHUB_TOKEN` package 权限与 GHCR 仓库/package 关联。
-- [ ] 产物包含正确 VPS 平台；使用 commit SHA 标记；保存构建日志和镜像 digest。
-- [ ] 确认私有 GHCR 包没有误设为 public；VPS 只读凭据成功 pull。
-- [ ] 用 secret scanning 检查 Git diff、构建日志和镜像层，不得泄漏密钥。
+### Phase 2 — Docker 镜像与 GitHub Actions
+
+- [x] Dockerfile 和本地 Compose 已构建/启动 backend、storefront 容器；Admin、Store API 商品列表、`POST /store/search` 和实际商品页 smoke test 均通过。PostgreSQL/Redis 原容器及 `b2csite-local_pgdata` 卷保持不变。
+- [x] 固定本地 Docker 基础镜像 `node:22.23.3-bookworm-slim`；本机 amd64 backend/storefront 镜像以非 root `node` 用户运行。
+- [x] CI workflow 已创建，用 `npm ci` 和 `npm run build` 检查 Medusa backend / Storefront；运行结果以 PR 最新 commit 为准。该 workflow 是 build check，不含支付或浏览器端到端测试。
+- [ ] 修复旧 PR CI 报出的 `@lib/data/*` 模块缺失：根 `.gitignore` 的通用 `data/` 规则误排除了 `apps/storefront/src/lib/data/` 源码；已收窄为根及具体 app 的数据目录，并补回 14 个官方 Storefront 数据模块。待推送修复并确认新 Actions run 通过。
+- [ ] CI 当前针对本机 Docker 构建的旧 CI run 曾失败；本机清除可再生 `.next` 输出后，使用同一 fake public env 执行完整 `npm run build` 已通过。GitHub Actions 最新 head 的结果尚待修复提交推送后重跑确认。
+- [ ] GHCR 发布权限最小化：`contents: read` + `packages: write`，使用 `GITHUB_TOKEN`；确认 package 与仓库 Actions access。
+- [ ] 首期不由 Actions 自动 SSH 更新 VPS。GHCR 私有包在 VPS 使用另一只读 `read:packages` 凭据。
+- [ ] 针对 VPS CPU 架构构建镜像；检查镜像层、日志、workflow outputs 无真实 secrets。
 
 ### Phase 3 — VPS Staging
 
-- [ ] Compose 网络、卷、healthcheck、restart policy 和日志轮转都已配置。
-- [ ] DB/Redis 仅内部访问；Admin 受保护；CORS、publishable key正确。
-- [ ] Server 与 Worker 分别启动并验证后台任务会被消费。
-- [ ] 迁移只运行一次，迁移完成后服务健康。
-- [ ] 图片上传/读取、Store API、购物车、测试支付、webhook 和邮件通过。
-- [ ] 完成数据库异地备份恢复和应用镜像回滚演练。
+- [ ] 迁移与初始化：VPS 数据库必须与本地测试数据库分开；从新的空数据库迁移 schema，按已核验流程创建一套 Store/Region/销售渠道/key，不导入本地测试商品、订单、顾客或 publishable key。
+- [ ] Staging 使用独立持久化数据库/Redis 卷、对象存储配置与测试密钥；普通应用容器更新不得删除数据卷。任何 `down -v`、volume 删除或数据库重置操作都视为破坏性操作，必须先确认目标、备份并获明确授权。
+- [ ] 验证 Nginx Host/SNI 路由、有效 TLS、Cloudflare 回源、防火墙策略、Storefront、Store API、Admin UI 和 Admin API。
+- [ ] 验证图片上传/读取、后台 Worker、测试支付/webhook、邮件、数据库迁移。
+- [ ] 实际演练 PostgreSQL 异地备份恢复与镜像回滚；处理 Docker published ports 可能绕开部分 UFW 规则的问题。
 
 ### Phase 4 — Production readiness
 
 - [ ] 支付 webhook 验签、重复事件幂等、重试/失败补偿、退款和订单状态一致性已测试。
 - [ ] 备份恢复可用；监控、告警、磁盘余量、Redis/Worker backlog 有负责人。
-- [ ] 生产 secrets 与测试 secrets 完全分开；镜像 digest 和迁移版本记录完备。
-- [ ] 先做人工批准的 release；通过多次稳定发布后再评估自动部署。
-- [ ] 税务、配送、隐私和支付 provider 使用资格已由相应专业/供应商渠道确认。
+- [ ] 生产使用全新隔离的 PostgreSQL/Redis 和持久化卷，不从本地测试环境恢复或导入业务数据；按锁定版本执行 schema migration 和经核验的一次性初始化。
+- [ ] 生产 secrets 与测试 secrets 完全分开；生产 key 在生产 Admin 创建并仅关联正式店面渠道；镜像 digest 和迁移版本记录完备。
+- [ ] 生产数据库完成异地备份及恢复演练；正常应用发版保留数据库卷，不把删除卷作为应用更新/回滚步骤。
+- [ ] 由用户批准正式 release；先备份，再运行经验证的迁移流程并 smoke test。
+- [ ] 税务、配送、隐私和支付 provider 使用资格已由对应供应商/专业渠道确认。
 
 ## 9. 故障定位速查
 
 | 现象 | 首先检查 | 常见原因/修复方向 |
 |---|---|---|
-| `npm ci` 或 Medusa build 失败 | Node/npm 版本、工作目录、lockfile、完整首个错误 | Node 不在支持范围；lockfile 与 package 不匹配；Medusa 核心包版本线混用；内存不足 |
+| `npm ci` 或 Medusa build 失败 | Node/npm 版本、工作目录、lockfile、完整首个错误 | Node 不在支持范围；lockfile 与 package 不匹配；Medusa 核心包版本线混用；源码被 `.gitignore` 误排除（例如通用 `data/` 规则吞掉 Storefront `src/lib/data/`）；内存不足 |
 | Docker build 成功但 VPS `exec format error` | `docker image inspect` 的架构、buildx platforms、VPS `uname -m` | CI 只构建了 amd64，而 VPS 是 ARM64（或相反） |
 | GHCR push 401/403 | workflow `permissions`、Actions 设置、package access、image 名称/owner | 缺 `packages: write`；包未授权当前仓库；namespace 大小写/路径错误 |
 | VPS pull 私有镜像 401/denied | `docker login ghcr.io` 的账号、PAT scope、package read access、token 是否过期 | 缺 `read:packages`；package 无该用户权限；token 过期/未授权组织 SSO |
 | Cloudflare 521/522 | Nginx 容器、VPS firewall/云防火墙、Cloudflare IP 范围、端口映射 | 源站拒绝/超时；Cloudflare IP allowlist 过时；Nginx 未监听 |
 | Cloudflare 525/526 | Cloudflare TLS mode、Origin CA 主机名/到期日、Nginx 证书挂载/日志 | 源站 TLS 握手失败、证书过期/主机名不匹配；错误使用 Flexible |
+| Admin 登录成功后又回到登录页 | Admin/API scheme、Medusa `NODE_ENV`、session `Set-Cookie` 的 `Secure` 属性和浏览器保存的 Cookie | Medusa v2.21.2 production/staging 默认发 Secure session cookie；明文 HTTP 本地访问会导致浏览器不回送 cookie。公网/VPS 保持 HTTPS 与 Secure 默认；只可在绑定 loopback 的本地 Compose 用 `cookieOptions.secure=false` 测试，并避免切换 production image 到 development mode |
 | Nginx 502/504 | Nginx upstream、Compose DNS/网络、后端容器日志 | 服务名/端口错误、容器不在共享网络、应用未启动 |
 | Nginx/Cloudflare HTTPS 循环或 CORS 错误 | forwarded proto/host、Cloudflare mode、Medusa CORS 与店面实际 Origin | 代理头/模式不匹配；CORS 缺少正确来源；Origin CA 证书访问绕过 Cloudflare |
 | Medusa 启动连不上 DB/Redis | Compose DNS 名、容器网络、连接串、服务健康和日志 | 容器里误用 `localhost`；密码/url 编码错误；服务未 ready；环境变量未注入 |
-| Medusa API 401/商品列表空 | publishable key、发布状态、region/货币配置、请求 URL/headers | key 缺失/错误；商品 draft；Store API 要求字段/区域不匹配 |
+| 镜像更新后数据消失或 VPS 店铺为空 | Compose 是否把 PostgreSQL 数据放在持久化卷；是否错误导入了本地数据；首次 migration/bootstrap 是否完成 | 应用镜像只包含代码，不包含商品/订单等数据库数据。新 VPS 数据库预期为空，需迁移 schema 并有计划地初始化 Admin/Region/渠道/key 和正式商品；普通容器替换不应删数据库卷。不要为“补数据”盲目重跑非幂等 seed |
+| PostgreSQL/商品订单意外丢失 | Compose volume、部署命令、备份与恢复演练记录 | 删除 volume/`down -v` 或重建 DB 会丢业务数据；暂停写入、保留现场并按备份恢复流程处理，不要继续执行清理命令 |
+| Medusa API 401/商品列表空 | publishable key 绑定的 Sales Channel、商品的 Sales Channel links、published 状态、US 区域/USD 价格、请求 URL/headers | key 未绑定渠道会报 `Publishable key needs to have a sales channel configured`；key 与商品渠道无交集会让商品不可见；商品没有适用区域价格也无法正常展示。逐项验证，不因 regions 接口 200 或页面 200 就判定成功 |
+| Storefront 显示 `Out of stock` 但 Admin 有库存 | 产品变体的 `manage_inventory` / `allow_backorder`、变体的 inventory quantity、库存所在 stock location 是否关联销售渠道、Store API `+variants.inventory_quantity` 返回值、当前选中的 variant/options | Storefront 按变体库存判断按钮状态；若 API 返回有库存而页面仍显示缺货，先强制刷新，再核对页面选中的 variant/options 和 Next.js 服务端产品缓存，不能先断定数据库库存为 0。本地本次核验：库存 100、reserved 0，US 渠道关联该库存地点，Store API 返回 inventory_quantity 100；用户页面仍报告缺货，根因待进一步复现确认 |
+| Medusa Search 提示无 active index | `search_index.active_version`、`search_index_version.status`、`search_index_sync`、索引文档数及应用启动日志 | `medusa db:migrate:search` 创建 pending 索引版本不等于已激活或商品文档已 ingestion；迁移后要让 Medusa 启动完成 seed，确认 version 为 ready/active、同步完成后再以 POST 复测 `/store/search`。GET 搜索路由会返回 404 |
+| Sales Channel 删除被拒绝 | Medusa Store 的 `default_sales_channel_id` 引用 | Admin 禁用渠道不会清除 Store default 引用；先在 Admin 将 Store 默认改到保留渠道，再确认关联后通过 Admin/Medusa workflow 删除；不要直接 SQL 删除 |
+| 官方初始数据 seed 重跑失败并产生重复记录 | 当前 Store/Region/Sales Channel 和脚本日志 | scaffold 的 `initial-data-seed.ts` 可能非幂等；部分步骤已经写入时再运行会留下重复 Store/channel/key。运行前先检查数据和脚本行为，不要以为失败会全量回滚 |
 | CORS 或浏览器请求失败 | 浏览器 Network/Console、Medusa CORS env、Origin | Storefront 域名未列入 `STORE_CORS`；改了 env 却没重启/重建正确服务 |
 | Checkout/Payment provider 报错 | provider 配置、区域关联、test/live key、webhook endpoint/secret | 后端模块未注册；provider 未给 region 启用；测试与生产凭据混用 |
 | 商品图片上传成功但访问 403/404 | S3 endpoint/region/bucket、key权限、公开 URL/CDN配置 | endpoint 区域错误、读权限/URL设置错误、后台/店面访问路径不一致 |
@@ -382,6 +454,11 @@ Medusa 通用部署指南要求生产发布前处理应用数据库迁移和 lin
 - [Cloudflare Full (strict) 模式](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)
 - [Cloudflare IP 地址范围](https://www.cloudflare.com/ips/)
 - [Nginx Docker Official Image](https://hub.docker.com/_/nginx)
+- [Docker Compose networking](https://docs.docker.com/compose/how-tos/networking/)
+- [Docker port publishing](https://docs.docker.com/engine/network/port-publishing/)
+- [Docker packet filtering/firewall behavior](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
+- [Cloudflare Authenticated Origin Pulls](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/)
+- [Cloudflare client IP headers](https://developers.cloudflare.com/fundamentals/reference/http-request-headers/)
 
 ---
 
