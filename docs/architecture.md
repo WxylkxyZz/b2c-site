@@ -370,8 +370,9 @@ CLI 会输出一次性 invite token。只在可信 VPS 终端读取该 token，�
 
 - [x] Dockerfile 和本地 Compose 已构建/启动 backend、storefront 容器；Admin、Store API 商品列表、`POST /store/search` 和实际商品页 smoke test 均通过。PostgreSQL/Redis 原容器及 `b2csite-local_pgdata` 卷保持不变。
 - [x] 固定本地 Docker 基础镜像 `node:22.23.3-bookworm-slim`；本机 amd64 backend/storefront 镜像以非 root `node` 用户运行。
-- [ ] 为干净 checkout 补齐环境配置说明和重复 build 验证；本机 Docker 缺少 Buildx，暂未验证 CI/GHCR multi-platform build。
-- [ ] PR workflow 运行 lockfile 安装、lint/typecheck/test/build；部署镜像只在合并/批准流程产出，使用 commit SHA 标签。
+- [x] CI workflow 已创建，用 `npm ci` 和 `npm run build` 检查 Medusa backend / Storefront；运行结果以 PR 最新 commit 为准。该 workflow 是 build check，不含支付或浏览器端到端测试。
+- [ ] 修复旧 PR CI 报出的 `@lib/data/*` 模块缺失：根 `.gitignore` 的通用 `data/` 规则误排除了 `apps/storefront/src/lib/data/` 源码；已收窄为根及具体 app 的数据目录，并补回 14 个官方 Storefront 数据模块。待推送修复并确认新 Actions run 通过。
+- [ ] CI 当前针对本机 Docker 构建的旧 CI run 曾失败；本机清除可再生 `.next` 输出后，使用同一 fake public env 执行完整 `npm run build` 已通过。GitHub Actions 最新 head 的结果尚待修复提交推送后重跑确认。
 - [ ] GHCR 发布权限最小化：`contents: read` + `packages: write`，使用 `GITHUB_TOKEN`；确认 package 与仓库 Actions access。
 - [ ] 首期不由 Actions 自动 SSH 更新 VPS。GHCR 私有包在 VPS 使用另一只读 `read:packages` 凭据。
 - [ ] 针对 VPS CPU 架构构建镜像；检查镜像层、日志、workflow outputs 无真实 secrets。
@@ -398,7 +399,7 @@ CLI 会输出一次性 invite token。只在可信 VPS 终端读取该 token，�
 
 | 现象 | 首先检查 | 常见原因/修复方向 |
 |---|---|---|
-| `npm ci` 或 Medusa build 失败 | Node/npm 版本、工作目录、lockfile、完整首个错误 | Node 不在支持范围；lockfile 与 package 不匹配；Medusa 核心包版本线混用；内存不足 |
+| `npm ci` 或 Medusa build 失败 | Node/npm 版本、工作目录、lockfile、完整首个错误 | Node 不在支持范围；lockfile 与 package 不匹配；Medusa 核心包版本线混用；源码被 `.gitignore` 误排除（例如通用 `data/` 规则吞掉 Storefront `src/lib/data/`）；内存不足 |
 | Docker build 成功但 VPS `exec format error` | `docker image inspect` 的架构、buildx platforms、VPS `uname -m` | CI 只构建了 amd64，而 VPS 是 ARM64（或相反） |
 | GHCR push 401/403 | workflow `permissions`、Actions 设置、package access、image 名称/owner | 缺 `packages: write`；包未授权当前仓库；namespace 大小写/路径错误 |
 | VPS pull 私有镜像 401/denied | `docker login ghcr.io` 的账号、PAT scope、package read access、token 是否过期 | 缺 `read:packages`；package 无该用户权限；token 过期/未授权组织 SSO |
