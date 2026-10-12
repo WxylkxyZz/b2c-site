@@ -24,7 +24,9 @@ build/
 *.seed.json
 
 # Docker
-data/
+/data/
+/apps/backend/data/
+/apps/storefront/data/
 
 # IDE
 .idea/
