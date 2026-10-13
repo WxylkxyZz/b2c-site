@@ -119,12 +119,18 @@ permissions:
 
 **VPS 拉取私有镜像：**这是另一个身份。VPS 不会自动继承 Actions 的 `GITHUB_TOKEN`，需配置一个独立的只读 GHCR 凭据（GitHub classic PAT，最小 `read:packages` scope，且账号有该 package 的读取权）。将其安全地用于 VPS 的 `docker login ghcr.io`，不要写进 Compose 文件、仓库、镜像或终端历史；可使用 Docker credential store。该 token 可设到期日并安排轮换。若账户/组织启用 SSO，还要授权 token。GitHub 对 GHCR 外部 CLI 拉取私有包的认证说明见[Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-with-a-personal-access-token)。
 
+**当前仓库状态（2026-10-13 核对）：** GitHub Actions 已启用；仓库允许的 Actions 为 `all`；`GITHUB_TOKEN` 默认权限为 `Read repository contents`。默认只读是合适的最小默认值，发布 job 会在 workflow YAML 中单独请求 `packages: write`，其余未列权限均不授予。当前尚未配置下方 4 个 Actions repository variables，因此发布 job 会在变量准备好前跳过；这不会影响 PR build check。首次发布后，在仓库 **Packages** 页面打开 backend/storefront package 的 **Package settings → Manage Actions access**，确认仓库 `WxylkxyZz/b2c-site` 有所需访问权限；确认 **Change visibility** 显示 Private。若 workflow 仍收到 403，检查组织 Actions policy 与 package access，不要把全仓默认权限改为读写来掩盖问题。
+
+**如何在 GitHub 网页确认：**打开仓库 → **Settings → Actions → General → Workflow permissions**。页面显示 `Read repository contents permission` 表示默认 token 只读；发布 job 在 workflow 中显式申请 `contents: read` 和 `packages: write`。GitHub 会按该 job 请求权限，但组织策略仍可禁止写权限。不要启用无关的 pull-request approval 权限。
+
+**Storefront 构建变量：**在 **Settings → Secrets and variables → Actions → Variables → New repository variable** 添加 `NEXT_PUBLIC_MEDUSA_BACKEND_URL`、`NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`、`NEXT_PUBLIC_DEFAULT_REGION` 和 `NEXT_PUBLIC_BASE_URL`。这些变量会编译进浏览器可见的 storefront bundle，只能放公开 URL、公开 Publishable API Key、区域代码和公开店面 URL；禁止填写 Admin API key、Stripe secret 或其他私密凭据。不同环境若使用不同 URL/key，需要构建不同环境镜像。
+
 ### 3.2 用户需要做什么
 
 | 时间 | 你需要操作/提供 | 是否需要把密钥告诉 Claude/写入 Git |
 |---|---|---|
 | 开始项目时 | 确认 GitHub 仓库 owner/name、是否允许 GitHub Actions、Actions workflow 权限，以及目标默认分支 | 否；仓库名不是密钥 |
-| 首次 CI 发布时 | 如 Actions 默认限制包写入，在仓库 Settings → Actions → General 中允许 workflow 访问包；确认 `GITHUB_TOKEN` 有 `packages: write` | 不需 PAT/API key；GitHub 自动签发 token |
+| 首次 CI 发布时 | 仓库 Settings → Actions → General → Workflow permissions 查看默认 `GITHUB_TOKEN` 权限；本仓库当前默认是只读。发布 job 在 YAML 显式申请 `packages: write`。确认组织策略未禁止 workflow 申请写权限，再在首次发布后检查 GHCR package 的 Private 可见性与 Actions/repository access。PR #2 的发布 job 因必要 Variables 尚未设置而跳过 | 不需 PAT/API key；GitHub 自动签发 token |
 | VPS 拉私有 GHCR 时 | 在 GitHub 创建仅 `read:packages` 的 classic PAT；在 VPS 登录 GHCR；验证 `docker pull` 成功 | 只在 VPS 安全录入，不发给 Claude、不提交、不贴日志 |
 | 自动 SSH 部署（以后可选） | 创建受限 deploy 用户和专用 SSH key；把私钥存为 GitHub Actions secret，固定服务器 host key | 不在本聊天中提供私钥；首期建议不启用自动 SSH 部署 |
 | 正式业务接入时 | 在各供应商后台创建 Staging/Test 与 Production 凭据；决定支付、邮件、对象存储配置 | 通过服务器安全环境配置/Secret Store 输入，不进 Git/镜像 |
@@ -136,13 +142,14 @@ permissions:
 
 ### 3.3 首期发布流水线边界
 
-建议第一期 workflow 做：checkout → 配置 Node → `npm ci` → lint/typecheck/test → build → Docker buildx build → GHCR 登录 → push commit SHA 标签。先不让同一个 workflow 自动 SSH 到生产机；人工在 VPS 设置目标 tag、拉取、备份/迁移/更新并 smoke test。自动部署作为二期工作，在 Staging 和回滚验证通过后再决定。
+建议第一期 workflow 做：checkout → 配置 Node → `npm ci` → build → Docker buildx build → GHCR 登录 → push 不可变 commit SHA tag。当前 PR workflow 已验证 `npm ci` + backend/Storefront build；main 发布使用 `linux/amd64,linux/arm64`。首期不让 workflow 自动 SSH 到 VPS；人工部署指定 tag，备份/迁移/更新并 smoke test。Staging 和回滚验证通过后再决定是否自动部署。
 
 - PR：只验证，不推送生产镜像、不接触生产 secrets。
-- 默认分支合并：构建并发布不可变 commit-tagged 镜像；不自动更新生产。
-- Release/人工批准：选择某个已验证 SHA 发布到 Staging/Production。
+- 默认分支合并：CI 成功后构建并发布 backend / Storefront 的 amd64、arm64 多平台镜像，使用 commit SHA 作为不可变 tag；不会自动更新 VPS。
+- Storefront image 在 build 时写入 `NEXT_PUBLIC_*` 值，这些值是公开配置，不是 secrets。若 Staging 与 Production URL/key 不同，需分别构建各环境镜像；不要把真实支付/管理密钥放入 build args。
 - GHCR 包设为 Private；核对包访问策略，确保正确仓库 workflow 可写、VPS read-only 凭据可读。
-- Node Docker 镜像和 buildx 平台必须匹配目标架构。若 VPS 为 ARM64，CI 发布至少要含 `linux/arm64`；若同时有本机开发 x86 构建，也可发布 multi-platform manifest。
+- Actions job 显式声明 `contents: read` 与 `packages: write`。仓库/组织 Settings → Actions → General 的 `Workflow permissions` 若设为 “Read repository contents permission”，job 仍可通过 workflow YAML 显式请求必要的 `packages: write`；若组织策略限制写权限，需由组织管理员调整策略。不要为方便而授予所有 job 全局写权限。
+- 发布目标固定 `linux/amd64,linux/arm64`；通过 GHCR image manifest 检查两个平台均存在。
 
 ## 4. 服务网络、域名与 Compose 约束
 
@@ -312,7 +319,7 @@ CLI 会输出一次性 invite token。只在可信 VPS 终端读取该 token，�
 |---|---|---|---|
 | 1. 架构与版本核验 | 开发电脑（推荐已安装 Node/Docker 的 WSL Ubuntu） | 开发者按官方兼容要求确认版本、运行脚手架、记录锁文件；Claude 可协助执行非秘密的开发命令 | 正式 monorepo 有 backend/storefront，版本和锁文件可复现 |
 | 2. 本地应用验证 | 开发电脑 | 启动 PostgreSQL/Redis 与 Medusa/Storefront；在 Admin 建测试商品，确认 Store API/店面读取并完成测试购物车流程 | 后端、Admin、API 与店面 smoke test 通过 |
-| 3. 本地容器化与代码检查 | 开发电脑 + GitHub Actions runner | 本地 Docker Compose 使用既有测试数据库验收容器；PR workflow 后续运行锁文件安装、lint/typecheck/test/build | 本地 images 可启动、CI 绿灯；默认分支合并后可发布带 commit SHA/tag 且架构匹配的私有 GHCR 镜像；首期不自动部署生产 |
+| 3. 本地容器化与代码检查 | 开发电脑 + GitHub Actions runner | 本地 Docker Compose 使用既有测试数据库验收容器；PR 执行 `npm ci` + build；main 合并后构建 backend 与 Storefront 的 amd64/arm64 镜像并推送 GHCR | 本地 images 可启动、CI 绿灯、GHCR SHA-tagged 多平台镜像可读；首期不自动部署生产 |
 | 4. VPS Staging | VPS | 用户配置 VPS、Cloudflare、Origin CA、GHCR read-only 凭据及测试环境变量；使用全新独立数据库/数据卷部署指定镜像 | Storefront、Admin、API、媒体、后台任务和可用的测试流程通过 |
 | 5. Production | VPS | 仅在 Staging、备份恢复、支付 webhook 等门槛通过后由用户批准部署；新建生产数据环境，先迁移/初始化，再启动和 smoke test | 正式流量通过 Cloudflare 到 Nginx；监控、回滚和维护责任明确 |
 
@@ -371,11 +378,14 @@ CLI 会输出一次性 invite token。只在可信 VPS 终端读取该 token，�
 - [x] Dockerfile 和本地 Compose 已构建/启动 backend、storefront 容器；Admin、Store API 商品列表、`POST /store/search` 和实际商品页 smoke test 均通过。PostgreSQL/Redis 原容器及 `b2csite-local_pgdata` 卷保持不变。
 - [x] 固定本地 Docker 基础镜像 `node:22.23.3-bookworm-slim`；本机 amd64 backend/storefront 镜像以非 root `node` 用户运行。
 - [x] CI workflow 已创建，用 `npm ci` 和 `npm run build` 检查 Medusa backend / Storefront；运行结果以 PR 最新 commit 为准。该 workflow 是 build check，不含支付或浏览器端到端测试。
-- [ ] 修复旧 PR CI 报出的 `@lib/data/*` 模块缺失：根 `.gitignore` 的通用 `data/` 规则误排除了 `apps/storefront/src/lib/data/` 源码；已收窄为根及具体 app 的数据目录，并补回 14 个官方 Storefront 数据模块。待推送修复并确认新 Actions run 通过。
-- [ ] CI 当前针对本机 Docker 构建的旧 CI run 曾失败；本机清除可再生 `.next` 输出后，使用同一 fake public env 执行完整 `npm run build` 已通过。GitHub Actions 最新 head 的结果尚待修复提交推送后重跑确认。
-- [ ] GHCR 发布权限最小化：`contents: read` + `packages: write`，使用 `GITHUB_TOKEN`；确认 package 与仓库 Actions access。
-- [ ] 首期不由 Actions 自动 SSH 更新 VPS。GHCR 私有包在 VPS 使用另一只读 `read:packages` 凭据。
-- [ ] 针对 VPS CPU 架构构建镜像；检查镜像层、日志、workflow outputs 无真实 secrets。
+- [x] 修复 PR CI 报出的 `@lib/data/*` 缺失：收窄根 `.gitignore` 数据目录规则，并跟踪 14 个 Storefront 数据模块；修复后的 GitHub Actions run `38253970967` 在提交 `7a75a1b` 上通过 backend 与 Storefront build。
+- [x] PR workflow 对 pull request 执行 `npm ci` 和 `npm run build`；只用虚构 publishable key 和 localhost URL，不使用环境 secrets。它是 build check，不含支付或浏览器端到端测试。
+- [x] 已在 `ci/publish-multiarch-ghcr` 添加 main push 后的 GHCR workflow：backend / Storefront 均配置 `linux/amd64,linux/arm64` 构建与 commit SHA tag；PR 仍只执行 build。PR #2 已创建（2026-10-13），尚未合并，因此尚未实际发布镜像。
+- [x] 发布 job 使用 job-level 最小权限 `contents: read`、`packages: write`，并以 `GITHUB_TOKEN` 登录 GHCR；Docker actions 已 pin 到经核对的完整 commit SHA。
+- [x] Publish job 在所需公开 Storefront Actions variables 缺失时跳过，避免用 localhost/fake CI 值发布环境镜像；2026-10-13 检查时当前四个 repository variables 均未配置。PR #2 的 build 检查通过（run `38274944163`），Publish job 因变量未配置而按预期 `skipped`。
+- [ ] 审核并合并 PR #2；合并前确保已配置公开 Storefront URL/key/region Variables，再确认首次发布运行成功；检查 GHCR package 为 Private 并授权 Actions access。
+- [ ] 验证发布后的 GHCR manifest 同时包含 `linux/amd64`、`linux/arm64`，检查镜像层、日志和 workflow outputs 无真实 secrets。
+- [ ] 首期不由 Actions 自动 SSH 更新 VPS。VPS 拉私有 GHCR 包时使用独立只读 `read:packages` 凭据，不复用 Actions token。
 
 ### Phase 3 — VPS Staging
 
