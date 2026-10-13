@@ -62,7 +62,7 @@ Cloudflare 回源加密使用 Full (strict)；详细域名、TLS 与网络规则
 | React / React DOM | `18.3.1` resolved for the root and Storefront workspace | Root `package.json` + `package-lock.json`; verified with `npm ls` after install |
 | Node.js | `22.23.3` | `.nvmrc`；本地/CI/Docker 尽可能使用同一 LTS 线 |
 | npm | `10.9.9` | root `packageManager` 字段 |
-| PostgreSQL / Redis | PostgreSQL `15-alpine` / Redis `7-alpine` 本地容器健康；生产镜像版本待冻结 | `docker-compose.local.yml`；本机测试 volume 保留，VPS patch/digest 待核验 |
+| PostgreSQL / Redis | PostgreSQL `15-alpine` / Redis `7-alpine` 本地容器健康；生产镜像版本待冻结 | `infra/local/compose.yaml`；本机测试 volume 保留，VPS patch/digest 待核验 |
 | Docker Engine / Compose | WSL 本地当前 `29.1.3` / `2.40.3` | VPS 版本待确定；不是应用依赖锁版本 |
 | Nginx / Actions | 尚未配置 | Nginx 镜像 digest 与 Actions commit SHA 在构建部署阶段核定 |
 
@@ -70,8 +70,8 @@ Cloudflare 回源加密使用 Full (strict)；详细域名、TLS 与网络规则
 
 - 本地 Dockerfile 使用 `node:22.23.3-bookworm-slim`，分别构建 Medusa backend 和 Next.js standalone Storefront；Docker build context 在 monorepo 根目录。
 - 本地 Compose 继续使用原有 `b2csite-local` PostgreSQL/Redis 服务和 PostgreSQL 持久化卷，不迁移或清除本地测试数据。为避免与当前宿主机进程端口冲突，容器化 Admin/API 使用 `http://localhost:19000`，店面使用 `http://localhost:18000`，仅绑定回环地址。
-- 复制 `.env.container.example` 为被 Git 忽略的 `.env.container.local`，使用独立本地 JWT/Cookie/MFA secrets，并填入现有本地 Publishable API Key。使用 `--env-file .env.container.local` 启动 Compose；env 文件不会复制进镜像。Storefront 的 `NEXT_PUBLIC_*` 会编译进浏览器 bundle，publishable key 是公开标识，不可把 Stripe/支付 secret 放入这些变量。
-- 本地 Compose backend 保持 `NODE_ENV=production`，但因 Admin/API 仅绑定 `127.0.0.1` 的明文 HTTP，本地专用环境变量 `LOCAL_HTTP_ADMIN=true` 会在 Medusa `medusa-config.ts` 设置 `cookieOptions.secure=false`，供本机测试登录使用。这个覆盖仅在 `docker-compose.local.yml`，禁止复制到 VPS/公网；VPS 通过 HTTPS 提供 Admin，保持 Secure session cookie 默认值。
+- 复制 `infra/local/.env.example` 为被 Git 忽略的 `infra/local/.env.local`，使用独立本地 JWT/Cookie/MFA secrets，并填入现有本地 Publishable API Key。`POSTGRES_PASSWORD` 应使用 64 位十六进制字符串（可通过 `openssl rand -hex 32` 生成），因为它会嵌入 `DATABASE_URL`，不可直接使用含 URI 特殊字符的密码。使用 `docker compose --env-file infra/local/.env.local -f infra/local/compose.yaml ...` 启动 Compose；env 文件不会复制进镜像。该配置显式固定 Compose project 名为 `b2csite-local`，沿用现有 `b2csite-local_pgdata` PostgreSQL 数据卷；不要使用 `docker compose down -v`。Storefront 的 `NEXT_PUBLIC_*` 会编译进浏览器 bundle，publishable key 是公开标识，不可把 Stripe/支付 secret 放入这些变量。
+- 本地 Compose backend 保持 `NODE_ENV=production`，但因 Admin/API 仅绑定 `127.0.0.1` 的明文 HTTP，本地专用环境变量 `LOCAL_HTTP_ADMIN=true` 会在 Medusa `medusa-config.ts` 设置 `cookieOptions.secure=false`，供本机测试登录使用。这个覆盖仅在 `infra/local/compose.yaml`，禁止复制到 VPS/公网；VPS 通过 HTTPS 提供 Admin，保持 Secure session cookie 默认值。
 - 已确认登录循环的代码根因：Medusa `2.21.2` 在 production/staging 默认下发 Secure session cookie；浏览器通过本地 HTTP 访问时不会保存/回送该 Cookie。曾尝试在本地把 NODE_ENV 改为 development，但生产镜像缺少开发依赖并会尝试在只读 Admin build 目录写文件，因此已恢复 production 模式，改用局部 `cookieOptions` override。改动后的后端 build 通过、容器健康 `/health=200`；用户已实际验证 Admin 登录正常。
 - backend image 与 storefront image 分别执行 `docker build --file apps/backend/Dockerfile ... .` / `docker compose ... build storefront`。Buildx 当前环境未安装；此阶段仅验证本机 amd64 单平台镜像，不代表 GHCR multi-platform 发布已完成。
 - 仅容器化前后端服务；数据库卷需在部署/停止时保留。不要使用 `docker compose down -v`。本地容器测试与 VPS 全新数据库部署相互独立。
