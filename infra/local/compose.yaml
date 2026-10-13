@@ -1,9 +1,11 @@
+name: b2csite-local
+
 services:
   postgres:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: medusa
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.container.local}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/local/.env.local to 64 hex characters}
       POSTGRES_DB: medusa
     ports:
       - "127.0.0.1:55432:5432"
@@ -17,7 +19,7 @@ services:
 
   backend:
     build:
-      context: .
+      context: ../..
       dockerfile: apps/backend/Dockerfile
     environment:
       NODE_ENV: production
@@ -47,7 +49,7 @@ services:
 
   storefront:
     build:
-      context: .
+      context: ../..
       dockerfile: apps/storefront/Dockerfile
       args:
         MEDUSA_BACKEND_URL_INTERNAL: http://backend:9000

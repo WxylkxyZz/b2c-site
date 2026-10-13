@@ -5,11 +5,12 @@ node_modules/
 
 # Environment
 .env
+.env.*
+!.env.example
+!.env.template
+!/infra/local/.env.example
 .env.local
 .env.*.local
-.env.prod
-.env.db
-.env.minio
 *.env
 
 # Build output
@@ -112,6 +113,7 @@ Thumbs.db
 **/.DS_Store
 # Local Docker Compose environment overrides
 .env.container.local
+infra/local/.env.local
 # Admin uploads and local build artifacts
 apps/backend/static/
 *.tsbuildinfo
