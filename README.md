@@ -1,47 +1,60 @@
-# B2Csite｜Medusa 自托管电商项目
+# B2Csite
 
-本项目旨在构建一个基于 **Medusa v2** 的跨境 DTC 独立电商站。
+Medusa v2 commerce backend and Next.js customer storefront. This repository follows the official Medusa workspace scaffold, with deployment-specific configuration for Vercel and a VPS.
 
-## 架构概览
+## Architecture
 
-- **电商后端与管理后台**：Medusa。后端提供商品、购物车、订单等业务 API；Medusa Admin 供商家管理商品和订单。
-- **顾客店面**：Next.js Storefront，与 Medusa 后端分开开发和部署，通过 Store API 通信。
-- **运行方式**：VPS + Docker Compose；Medusa Server 和 Worker 分开运行。
-- **数据服务**：PostgreSQL 与 Redis 自托管；商品图片使用 S3 兼容对象存储。
-- **构建发布**：GitHub Actions 构建 Docker 镜像并推送到 GHCR，由 VPS 拉取和运行。
+- **Storefront:** `apps/storefront` is the customer-facing Next.js app. Vercel builds and deploys it from Git; it is not published as a Docker image.
+- **Commerce backend:** `apps/backend` is Medusa, including the Admin and Store APIs. GitHub Actions runs checks and publishes only the Backend Docker image to GHCR after a successful push to `main`.
+- **VPS release:** The owner selects an immutable Backend image tag/digest and updates Medusa on the VPS with Docker Compose. GitHub Actions does not SSH to or deploy the VPS.
+- **Data:** Local development uses `infra/local/compose.yaml`. New VPS environments use separate empty PostgreSQL/Redis data and must not import local test data. Existing local database volumes are retained.
 
-## 仓库目录
+See [deployment and operations](docs/deployment.md) for Vercel, GHCR, VPS, migration, backup, and release setup. The guide marks provider settings and environment-level work that have not been verified.
 
-```text
-apps/
-  backend/       Medusa 后端与 Admin
-  storefront/    Next.js 顾客店面
-docs/            架构方案与学习手册
-infra/local/     本地 Docker Compose 与环境变量模板
-.github/         GitHub Actions CI / 镜像发布
+## Runtime and install
+
+Use Node.js `24.21.0` and npm `11.19.0` as pinned in `.nvmrc` and the root package metadata. Run from the repository root:
+
+```sh
+npm ci
 ```
 
-根目录的 `package.json`、`package-lock.json`、`turbo.json` 和 Node/npm 配置用于管理两个 workspace 与统一构建；Docker 镜像的构建上下文也保持在仓库根目录。
+Configure local Storefront values in an ignored env file based on `apps/storefront/.env.example`. Configure the backend using `apps/backend/.env.template`. Never use real secrets in `NEXT_PUBLIC_*` values; the Medusa Publishable API Key is public, but Admin, database, JWT/Cookie, payment, and object-storage secrets are not.
 
-## 本地容器
+## Development
 
-本地 Compose 配置位于 `infra/local/compose.yaml`。复制 `infra/local/.env.example` 为 `infra/local/.env.local`，将 `POSTGRES_PASSWORD` 设为 64 位十六进制值（可用 `openssl rand -hex 32` 生成），并填写其他仅供本机使用的配置后，在仓库根目录执行：
+Start local PostgreSQL and Redis first, either through the local Compose stack or another local service setup. The root Compose project preserves its named database volume; do not use `docker compose down -v` for routine stops.
+
+```sh
+npm run backend:dev
+npm run storefront:dev
+```
+
+For local containers, copy `infra/local/.env.example` to the ignored `infra/local/.env.local`, fill in local-only values, and run:
 
 ```sh
 docker compose --env-file infra/local/.env.local -f infra/local/compose.yaml up --build
 ```
 
-Compose project 名固定为 `b2csite-local`，用于沿用现有 `b2csite-local_pgdata` PostgreSQL 数据卷。停止服务时不要添加 `-v`，以免删除数据库数据。详细说明见[架构文档](docs/architecture.md#24-本地容器化基线-2026-10-12)。
+## Checks
 
-## 文档导航
+```sh
+npm run lint --workspace=@dtc/backend
+npm run lint --workspace=@dtc/storefront
+npm run typecheck --workspace=@dtc/storefront
+npm run test:unit --workspace=@dtc/backend
+npm run build
+```
 
-- [部署架构方案](docs/architecture.md)：组件职责、网络与数据流、发布、备份、隔离和待确认事项。
-- [Medusa 小白学习手册](docs/medusa-learning-guide.md)：用通俗语言理解 Medusa、Storefront/Admin、模块、工作流和部署流程。
+Run a single Backend unit test with Jest path or test-name filters:
 
-## 从哪里开始
+```sh
+npm run test:unit --workspace=@dtc/backend -- --runTestsByPath src/search/helpers/__tests__/resolve-product-ids.unit.spec.ts
+npm run test:unit --workspace=@dtc/backend -- -t "matches product IDs"
+```
 
-建议先阅读[Medusa 小白学习手册](docs/medusa-learning-guide.md)，再查看[部署架构方案](docs/architecture.md)。
+The Backend HTTP/module integration-test commands exist, but currently have no matching test files; see `TODOS.md`. The storefront has no separate test suite. CI uses fake public Storefront values to compile and test code; these values do not connect to Medusa.
 
-## 安全提示
+## Current security note
 
-不要将 `.env`、支付密钥、数据库密码、JWT 密钥、对象存储密钥或真实顾客数据提交到 Git。发布凭据使用 GitHub Secrets 或服务器安全配置；生产与测试环境应使用不同的密钥和数据。
+`npm audit` currently reports unresolved vulnerabilities in the Medusa 2.21.2 dependency tree and related tooling. Do not run `npm audit fix --force`: the reported Medusa fix suggestion downgrades the framework, and the Tailwind major upgrade conflicts with the current Medusa UI preset. Review `docs/deployment.md` for the latest verified audit status and upgrade constraints; do not treat the project as vulnerability-free until a new audit confirms that.

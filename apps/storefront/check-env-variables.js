@@ -10,10 +10,7 @@ const requiredEnvs = [
 ];
 
 function checkEnvVariables() {
-  const missingEnvs = requiredEnvs.filter(function (env) {
-    c;
-    return !process.env[env.key];
-  });
+  const missingEnvs = requiredEnvs.filter((env) => !process.env[env.key]);
 
   if (missingEnvs.length > 0) {
     console.error(

@@ -15,9 +15,12 @@ const regionMapCache = {
 async function getRegionMap(cacheId: string) {
   const { regionMap, regionMapUpdated } = regionMapCache
 
-  if (!BACKEND_URL) {
+  if (
+    process.env.NODE_ENV === "production" &&
+    (!BACKEND_URL || !PUBLISHABLE_API_KEY)
+  ) {
     throw new Error(
-      "Middleware.ts: Error fetching regions. Did you set up regions in your Medusa Admin and define a NEXT_PUBLIC_MEDUSA_BACKEND_URL environment variable."
+      "Set NEXT_PUBLIC_MEDUSA_BACKEND_URL and NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY before running the Storefront."
     )
   }
 

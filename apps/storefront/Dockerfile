@@ -1,4 +1,4 @@
-FROM node:22.23.3-bookworm-slim AS build
+FROM node:24.21.0-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -21,9 +21,11 @@ ENV NEXT_PUBLIC_DEFAULT_REGION=${NEXT_PUBLIC_DEFAULT_REGION}
 ENV NEXT_PUBLIC_BASE_URL=${NEXT_PUBLIC_BASE_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 
+ENV BUILD_STANDALONE=true
+
 RUN npm run build --workspace=@dtc/storefront
 
-FROM node:22.23.3-bookworm-slim AS runtime
+FROM node:24.21.0-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 ENV PORT=8000

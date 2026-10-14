@@ -1,57 +1,22 @@
-# CLAUDE.md
+# Project guidance
 
-This file provides guidance for Claude Code when working in this repository.
+## Runtime and verification
 
-## Project status
+Use Node.js 24.21.0 and npm 11.19.0, pinned in `.nvmrc` and the workspace manifests. Install with `npm ci` from the repository root. Run backend lint/unit tests, Storefront lint/typecheck, then `npm run build` before relying on a change. CI runs the same quality checks and uses placeholder Storefront values only for compilation.
 
-The Medusa/Next.js scaffold and local container baseline have been added and verified locally on this branch. Check the current branch and commit before describing whether those changes have landed on Windows `main`. The WSL checkout is a separate working copy/branch and must not be assumed to match Windows unless its branch and commit are checked explicitly.
+## Architecture
 
-Do not describe VPS, Cloudflare, GHCR, payment integration, or production deployment as deployed or verified. Before scaffolding or implementing, read `README.md`, `docs/architecture.md`, and `docs/medusa-learning-guide.md`. Verify commands, versions, configuration, provider behavior, and resource requirements against the actual generated project and matching official Medusa documentation.
+- `apps/backend` is Medusa v2 and is deployed as a Docker image to a cloud VPS.
+- `apps/storefront` is Next.js and is built/deployed by Vercel. Vercel still runs the Next.js production build; it does not need a Storefront Docker image.
+- GitHub Actions publishes only the Backend image to GHCR after checks pass on `main`. VPS deployment is manually initiated by the owner using a commit-SHA image; Actions does not SSH to the VPS.
+- `infra/local` is local development. `infra/vps` is a separate new-environment Compose template. New VPS databases start empty; do not import local data or delete local volumes as part of deployment work.
 
-## Current direction
+## Configuration constraints
 
-- Commerce backend: Medusa v2.
-- Customer storefront: Next.js, deployed separately from Medusa.
-- Self-hosting: user-selected VPS managed with Docker Compose.
-- Initial preference: PostgreSQL and Redis on the VPS; account for the operational responsibility and single-host failure domain.
-- Production images: build in CI, publish versioned project images to GHCR, and have the VPS pull them. Do not build production images on a small VPS unless resource capacity is explicitly validated.
-- Medusa production topology: plan for separate server and worker instances; verify the exact version-specific configuration and command before implementation.
-- Product media: target S3-compatible object storage; Cloudflare R2 is the current preference, not yet configured or validated.
+Vercel public variables may contain only public URLs, region values, and Medusa Publishable API Keys. A Publishable API Key is created in Medusa Admin and associated with the Storefront Sales Channel; it is not an Admin credential. Production Storefront must use a reachable HTTPS backend URL and matching key. Preview should use an isolated staging backend or be intentionally restricted. Set Medusa CORS to exact intended origins.
 
-These are planning decisions, not a claim that any application, service, credentials, or deployment currently exists.
-
-## Safety and implementation constraints
-
-- Never commit `.env` files, payment credentials, database passwords, JWT secrets, object-storage secrets, customer data, or production database artifacts.
-- Keep staging and production databases, Redis instances, domains, and credentials isolated.
-- Preserve existing user data and untracked files. Inspect before deleting or overwriting; ask before irreversible changes outside an explicitly authorized scope.
-- Run database migrations as part of a tested release process. Back up first and test migrations/restores in staging; do not assume reverting an application image reverses a database migration.
-- Do not accept live payments until payment provider configuration, webhook signature verification, idempotency, retry behavior, and failure paths have been tested.
-- Do not make legal, tax, or provider eligibility assumptions based solely on architecture notes; verify with authoritative sources and the relevant provider.
+VPS secrets belong only in a protected server-side environment. Keep PostgreSQL, Redis, and the Worker off public ports. Validate Medusa server/worker mode and the one-time migration/bootstrap procedure against the installed version before using production configuration. Preserve volumes during application updates and test backups/restores before production use.
 
 ## Documentation
 
-- `README.md` is the project entrypoint and links to the detailed docs.
-- `docs/architecture.md` describes the proposed deployment architecture, open decisions, and rollout considerations.
-- `docs/medusa-learning-guide.md` introduces Medusa concepts for the project owner.
-
-Keep documentation explicit about what is confirmed, what is a recommendation, and what remains unverified. Match the user's beginner-friendly preference when explaining Medusa-specific concepts.
-
-## Skill routing
-
-When the user's request matches an available skill, invoke it via the Skill tool. Route only to skills in the session's available-skills list; answer directly for quick questions or small scoped edits.
-
-Key routing rules:
-- Product ideas/brainstorming → invoke `/office-hours`
-- Strategy/scope → invoke `/plan-ceo-review`
-- Architecture → invoke `/plan-eng-review`
-- Design system/plan review → invoke `/design-consultation` or `/plan-design-review`
-- Full review pipeline → invoke `/autoplan`
-- Bugs/errors → invoke `/investigate`
-- QA/testing site behavior → invoke `/qa` or `/qa-only`
-- Code review/diff check → invoke `/review`
-- Visual polish → invoke `/design-review`
-- Ship/deploy/PR → invoke `/ship` or `/land-and-deploy`
-- Save progress → invoke `/context-save`
-- Resume context → invoke `/context-restore`
-- Author a backlog-ready spec/issue → invoke `/spec`
+`README.md` is the project entrypoint; `docs/deployment.md` describes the current target topology and its unverified prerequisites. Treat previous architecture documents as historical until their statements are independently verified against current code and infrastructure. Do not describe a provider, deployment, payment flow, or backup as verified without a real test.

@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   build:
-    name: Build backend and storefront
+    name: Quality checks and build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: pk_ci_build_only_not_a_real_key
       NEXT_PUBLIC_MEDUSA_BACKEND_URL: http://localhost:9000
@@ -34,28 +34,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint backend
+        run: npm run lint --workspace=@dtc/backend
+
+      - name: Lint storefront
+        run: npm run lint --workspace=@dtc/storefront
+
+      - name: Typecheck storefront
+        run: npm run typecheck --workspace=@dtc/storefront
+
+      - name: Test backend
+        run: npm run test:unit --workspace=@dtc/backend
+
       - name: Build workspaces
         run: npm run build
 
-  publish:
-    name: Publish multi-platform images
-    if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      vars.NEXT_PUBLIC_MEDUSA_BACKEND_URL != '' &&
-      vars.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY != '' &&
-      vars.NEXT_PUBLIC_DEFAULT_REGION != '' &&
-      vars.NEXT_PUBLIC_BASE_URL != ''
+  publish-backend:
+    name: Publish Medusa backend image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
       packages: write
-    env:
-      NEXT_PUBLIC_MEDUSA_BACKEND_URL: ${{ vars.NEXT_PUBLIC_MEDUSA_BACKEND_URL }}
-      NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY }}
-      NEXT_PUBLIC_DEFAULT_REGION: ${{ vars.NEXT_PUBLIC_DEFAULT_REGION }}
-      NEXT_PUBLIC_BASE_URL: ${{ vars.NEXT_PUBLIC_BASE_URL }}
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -73,42 +75,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set image names
-        id: image-names
+      - name: Set image name
+        id: image-name
         shell: bash
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           repo="${GITHUB_REPOSITORY#*/}"
           repo="${repo,,}"
           echo "backend=ghcr.io/${owner}/${repo}-backend" >> "$GITHUB_OUTPUT"
-          echo "storefront=ghcr.io/${owner}/${repo}-storefront" >> "$GITHUB_OUTPUT"
 
       - name: Build and push backend image
+        id: build-backend
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/backend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.image-names.outputs.backend }}:${{ github.sha }}
+          tags: ${{ steps.image-name.outputs.backend }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and push Storefront image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: apps/storefront/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.image-names.outputs.storefront }}:${{ github.sha }}
-          build-args: |
-            MEDUSA_BACKEND_URL_INTERNAL=http://backend:9000
-            NEXT_PUBLIC_MEDUSA_BACKEND_URL=${{ env.NEXT_PUBLIC_MEDUSA_BACKEND_URL }}
-            NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=${{ env.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY }}
-            NEXT_PUBLIC_DEFAULT_REGION=${{ env.NEXT_PUBLIC_DEFAULT_REGION }}
-            NEXT_PUBLIC_BASE_URL=${{ env.NEXT_PUBLIC_BASE_URL }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Report image digest
+        run: |
+          echo "Backend image digest: ${{ steps.build-backend.outputs.digest }}"
