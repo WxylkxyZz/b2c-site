@@ -10,7 +10,7 @@ import Divider from "@modules/common/components/divider"
 import MedusaRadio from "@modules/common/components/radio"
 import { Button, clx, Heading, Text } from "@modules/common/components/ui"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 const PICKUP_OPTION_ON = "__PICKUP_ON"
 const PICKUP_OPTION_OFF = "__PICKUP_OFF"
@@ -69,45 +69,85 @@ const Shipping: React.FC<ShippingProps> = ({
 
   const isOpen = searchParams.get("step") === "delivery"
 
-  const _shippingMethods = availableShippingMethods?.filter(
-    (sm) => (sm as unknown as { service_zone?: { fulfillment_set?: { type?: string; location?: { address: HttpTypes.StoreCartAddress } } } }).service_zone?.fulfillment_set?.type !== "pickup"
+  const _shippingMethods = useMemo(
+    () =>
+      availableShippingMethods?.filter(
+        (sm) =>
+          (sm as unknown as {
+            service_zone?: {
+              fulfillment_set?: {
+                type?: string
+                location?: { address: HttpTypes.StoreCartAddress }
+              }
+            }
+          }).service_zone?.fulfillment_set?.type !== "pickup"
+      ) ?? [],
+    [availableShippingMethods]
   )
 
-  const _pickupMethods = availableShippingMethods?.filter(
-    (sm) => (sm as unknown as { service_zone?: { fulfillment_set?: { type?: string; location?: { address: HttpTypes.StoreCartAddress } } } }).service_zone?.fulfillment_set?.type === "pickup"
+  const _pickupMethods = useMemo(
+    () =>
+      availableShippingMethods?.filter(
+        (sm) =>
+          (sm as unknown as {
+            service_zone?: {
+              fulfillment_set?: {
+                type?: string
+                location?: { address: HttpTypes.StoreCartAddress }
+              }
+            }
+          }).service_zone?.fulfillment_set?.type === "pickup"
+      ) ?? [],
+    [availableShippingMethods]
   )
 
   const hasPickupOptions = !!_pickupMethods?.length
 
   useEffect(() => {
-    setIsLoadingPrices(true)
+    let isCurrent = true
+    const calculatedOptions = _shippingMethods.filter(
+      (method) => method.price_type === "calculated"
+    )
 
-    if (_shippingMethods?.length) {
-      const promises = _shippingMethods
-        .filter((sm) => sm.price_type === "calculated")
-        .map((sm) => calculatePriceForShippingOption(sm.id, cart.id))
+    setIsLoadingPrices(calculatedOptions.length > 0)
 
-      if (promises.length) {
-        Promise.allSettled(promises).then((res) => {
-          const pricesMap: Record<string, number> = {}
-          res
-            .filter((r) => r.status === "fulfilled")
-            .forEach((p) => {
-              if (p.value?.id) {
-                pricesMap[p.value.id] = p.value.amount ?? 0
-              }
-            })
-
-          setCalculatedPricesMap(pricesMap)
-          setIsLoadingPrices(false)
-        })
+    if (!calculatedOptions.length) {
+      setCalculatedPricesMap({})
+      return () => {
+        isCurrent = false
       }
     }
 
-    if (_pickupMethods?.find((m) => m.id === shippingMethodId)) {
+    Promise.allSettled(
+      calculatedOptions.map((method) =>
+        calculatePriceForShippingOption(method.id, cart.id)
+      )
+    ).then((results) => {
+      if (!isCurrent) {
+        return
+      }
+
+      const pricesMap: Record<string, number> = {}
+      results.forEach((result) => {
+        if (result.status === "fulfilled" && result.value?.id) {
+          pricesMap[result.value.id] = result.value.amount ?? 0
+        }
+      })
+
+      setCalculatedPricesMap(pricesMap)
+      setIsLoadingPrices(false)
+    })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [cart.id, _shippingMethods])
+
+  useEffect(() => {
+    if (_pickupMethods.some((method) => method.id === shippingMethodId)) {
       setShowPickupOptions(PICKUP_OPTION_ON)
     }
-  }, [availableShippingMethods])
+  }, [_pickupMethods, shippingMethodId])
 
   const handleEdit = () => {
     router.push(pathname + "?step=delivery", { scroll: false })

@@ -28,6 +28,7 @@ build/
 /data/
 /apps/backend/data/
 /apps/storefront/data/
+infra/vps/.env
 
 # IDE
 .idea/

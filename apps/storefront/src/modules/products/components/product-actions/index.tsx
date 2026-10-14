@@ -75,22 +75,24 @@ export default function ProductActions({
     })
   }, [product.variants, options])
 
+  const selectedVariantId = isValidVariant ? selectedVariant?.id : undefined
+
   useEffect(() => {
     const params = new URLSearchParams(searchParams.toString())
-    const value = isValidVariant ? selectedVariant?.id : null
 
-    if (params.get("v_id") === value) {
+    if (params.get("v_id") === (selectedVariantId ?? null)) {
       return
     }
 
-    if (value) {
-      params.set("v_id", value)
+    if (selectedVariantId) {
+      params.set("v_id", selectedVariantId)
     } else {
       params.delete("v_id")
     }
 
-    router.replace(pathname + "?" + params.toString())
-  }, [selectedVariant, isValidVariant])
+    const query = params.toString()
+    router.replace(query ? `${pathname}?${query}` : pathname)
+  }, [selectedVariantId, pathname, router, searchParams])
 
   // check if the selected variant is in stock
   const inStock = useMemo(() => {

@@ -3,7 +3,7 @@ import { Container } from "@modules/common/components/ui"
 import Checkbox from "@modules/common/components/checkbox"
 import Input from "@modules/common/components/input"
 import { mapKeys } from "lodash"
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import AddressSelect from "../address-select"
 import CountrySelect from "../country-select"
 
@@ -31,6 +31,8 @@ const ShippingAddress = ({
     email: cart?.email || "",
   })
 
+  const hasUserEditedForm = useRef(false)
+
   const countriesInRegion = useMemo(
     () => cart?.region?.countries?.map((c) => c.iso_2),
     [cart?.region]
@@ -45,49 +47,75 @@ const ShippingAddress = ({
     [customer?.addresses, countriesInRegion]
   )
 
-  const setFormAddress = (
-    address?: HttpTypes.StoreCartAddress,
-    email?: string
-  ) => {
-    if (address) {
-      setFormData((prevState: Record<string, string>) => ({
-        ...prevState,
-        "shipping_address.first_name": address?.first_name || "",
-        "shipping_address.last_name": address?.last_name || "",
-        "shipping_address.address_1": address?.address_1 || "",
-        "shipping_address.company": address?.company || "",
-        "shipping_address.postal_code": address?.postal_code || "",
-        "shipping_address.city": address?.city || "",
-        "shipping_address.country_code": address?.country_code || "",
-        "shipping_address.province": address?.province || "",
-        "shipping_address.phone": address?.phone || "",
-      }))
-    }
+  const setFormAddress = useCallback(
+    (address?: HttpTypes.StoreCartAddress, email?: string) => {
+      if (address) {
+        setFormData((prevState: Record<string, string>) => ({
+          ...prevState,
+          "shipping_address.first_name": address.first_name || "",
+          "shipping_address.last_name": address.last_name || "",
+          "shipping_address.address_1": address.address_1 || "",
+          "shipping_address.company": address.company || "",
+          "shipping_address.postal_code": address.postal_code || "",
+          "shipping_address.city": address.city || "",
+          "shipping_address.country_code": address.country_code || "",
+          "shipping_address.province": address.province || "",
+          "shipping_address.phone": address.phone || "",
+        }))
+      }
 
-    if (email) {
-      setFormData((prevState: Record<string, string>) => ({
-        ...prevState,
-        email: email,
-      }))
-    }
-  }
+      if (email) {
+        setFormData((prevState: Record<string, string>) => ({
+          ...prevState,
+          email,
+        }))
+      }
+    },
+    []
+  )
+
+  const handleSelectAddress = useCallback(
+    (address?: HttpTypes.StoreCartAddress, email?: string) => {
+      hasUserEditedForm.current = true
+      setFormAddress(address, email)
+    },
+    [setFormAddress]
+  )
 
   useEffect(() => {
-    // Ensure cart is not null and has a shipping_address before setting form data
-    if (cart && cart.shipping_address) {
-      setFormAddress(cart?.shipping_address, cart?.email)
+    if (hasUserEditedForm.current) {
+      return
     }
 
-    if (cart && !cart.email && customer?.email) {
+    if (cart?.shipping_address) {
+      setFormAddress(cart.shipping_address, cart.email || undefined)
+    } else if (!cart?.email && customer?.email) {
       setFormAddress(undefined, customer.email)
     }
-  }, [cart]) // Add cart as a dependency
+  }, [
+    cart?.shipping_address,
+    cart?.shipping_address?.id,
+    cart?.shipping_address?.first_name,
+    cart?.shipping_address?.last_name,
+    cart?.shipping_address?.address_1,
+    cart?.shipping_address?.address_2,
+    cart?.shipping_address?.company,
+    cart?.shipping_address?.postal_code,
+    cart?.shipping_address?.city,
+    cart?.shipping_address?.country_code,
+    cart?.shipping_address?.province,
+    cart?.shipping_address?.phone,
+    cart?.email,
+    customer?.email,
+    setFormAddress,
+  ])
 
   const handleChange = (
     e: React.ChangeEvent<
       HTMLInputElement | HTMLInputElement | HTMLSelectElement
     >
   ) => {
+    hasUserEditedForm.current = true
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
@@ -108,7 +136,7 @@ const ShippingAddress = ({
                 key.replace("shipping_address.", "")
               ) as unknown as HttpTypes.StoreCartAddress
             }
-            onSelect={setFormAddress}
+            onSelect={handleSelectAddress}
           />
         </Container>
       )}

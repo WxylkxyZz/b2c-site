@@ -1,0 +1,106 @@
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN to the real API hostname}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - ingress
+    depends_on:
+      medusa-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16.8-bookworm
+    environment:
+      POSTGRES_USER: medusa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: medusa
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medusa -d medusa"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.2-bookworm
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  medusa-server:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR tag or digest}
+    environment: &medusa-environment
+      NODE_ENV: production
+      NODE_OPTIONS: --enable-source-maps
+      MEDUSA_WORKER_MODE: server
+      DATABASE_URL: postgres://medusa:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/medusa
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      COOKIE_SECRET: ${COOKIE_SECRET:?Set COOKIE_SECRET}
+      STORE_CORS: ${STORE_CORS:?Set STORE_CORS to the exact Vercel production origin}
+      ADMIN_CORS: ${ADMIN_CORS:?Set ADMIN_CORS to the exact Admin origin}
+      AUTH_CORS: ${AUTH_CORS:?Set AUTH_CORS to the allowed auth origins}
+    expose:
+      - "9000"
+    networks:
+      - ingress
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+  medusa-worker:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR tag or digest}
+    environment:
+      <<: *medusa-environment
+      MEDUSA_WORKER_MODE: worker
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  ingress:
+  data:
+    internal: true

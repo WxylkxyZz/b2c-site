@@ -1,6 +1,8 @@
-FROM node:22.23.3-bookworm-slim AS build
+FROM node:24.21.0-bookworm-slim AS build
 
 WORKDIR /app
+
+RUN npm install --global npm@11.19.0
 
 COPY package.json package-lock.json turbo.json ./
 COPY apps/backend/package.json apps/backend/package.json
@@ -10,7 +12,9 @@ RUN npm ci
 COPY apps/backend apps/backend
 RUN npm run build --workspace=@dtc/backend
 
-FROM node:22.23.3-bookworm-slim AS runtime
+FROM node:24.21.0-bookworm-slim AS runtime
+
+RUN npm install --global npm@11.19.0
 
 ENV NODE_ENV=production
 ENV PORT=9000

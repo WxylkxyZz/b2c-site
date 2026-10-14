@@ -1,10 +1,9 @@
 const checkEnvVariables = require("./check-env-variables")
 
-checkEnvVariables()
+if (process.env.NODE_ENV === "development") {
+  checkEnvVariables()
+}
 
-/**
- * Medusa Cloud-related environment variables
- */
 const S3_HOSTNAME = process.env.MEDUSA_CLOUD_S3_HOSTNAME
 const S3_PATHNAME = process.env.MEDUSA_CLOUD_S3_PATHNAME
 
@@ -12,20 +11,13 @@ const S3_PATHNAME = process.env.MEDUSA_CLOUD_S3_PATHNAME
  * @type {import('next').NextConfig}
  */
 const nextConfig = {
-  output: "standalone",
-  outputFileTracingRoot: require("path").join(__dirname, "../../"),
+  ...(process.env.BUILD_STANDALONE === "true"
+    ? {
+        output: "standalone",
+        outputFileTracingRoot: require("path").join(__dirname, "../../"),
+      }
+    : {}),
   reactStrictMode: true,
-  logging: {
-    fetches: {
-      fullUrl: true,
-    },
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
     remotePatterns: [
